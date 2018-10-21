@@ -1,4 +1,4 @@
-# search engine
+# webpage crawler & search engine
 A light weight webpage crawler and search engine with the following advantages:
 
 - Written purely in C++, no boost required, no 3rd party database required, run natively on everybody's Windows 10/7 x64.
