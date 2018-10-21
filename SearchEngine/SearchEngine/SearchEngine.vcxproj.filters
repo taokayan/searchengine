@@ -1,0 +1,156 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Source Files\NewFilter1">
+      <UniqueIdentifier>{860df867-329a-4b88-82ce-e60cd68ec171}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="KK">
+      <UniqueIdentifier>{5fe1f3a3-7c8e-4210-a53f-bcd63e1e9c49}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="ReadMe.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="stdafx.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="targetver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\stdafx.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\targetver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKAtomic.hpp">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKAVLTree.hpp">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKBase.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKBox.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKFibonacciHeap.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKFunctor.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKHash.hpp">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKHeap.hpp">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKList.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKLock.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKLockGuard.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKNodeBase.hpp">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKObject.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKQueue.hpp">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKRBTree.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKTask.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKThreadPool.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKTuple.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Multiplexer\KKVector.h">
+      <Filter>KK</Filter>
+    </ClInclude>
+    <ClInclude Include="SearchEngine.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KeyValueDB.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="md5.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KKLHeap.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="winHttpDownload.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BufferReader.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="httpDownload.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="stdafx.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="SearchEngine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Multiplexer\KKObject.cpp">
+      <Filter>KK</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Multiplexer\KKTask.cpp">
+      <Filter>KK</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Multiplexer\KKTests.cpp">
+      <Filter>KK</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Multiplexer\KKVectorTests.cpp">
+      <Filter>KK</Filter>
+    </ClCompile>
+    <ClCompile Include="ExternalSorter.hpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KKSocket.hpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
+    <ClCompile Include="winHttpDownload.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KeyValueDB.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PageSearcher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
