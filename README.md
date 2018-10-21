@@ -15,3 +15,41 @@ A light weight webpage crawler and search engine with the following advantages:
 
 ref: http://dujiaen.blogspot.com/
 
+# Usage:
+
+# Step 1 (Optional): Compile Your own WebCrawler & Search Engine:
+Download SearchEngine & Multiplexer(light weight library). Open SearchEngine\SearchEngine.sln using Visual Studio 2017 and then build the whole project. You'll find SearchEngine\x64\Release\SearchEngine.exe will be successfully created if compilation success.
+
+# Step 2: Initial Setup
+In SearchEngine\x64\Release, create a folder called ```dbs```, then create a file called ```urls.txt``` inside ```dbs```. Open ```urls.txt```, enter one or more initial URLs line by line, for example: ```nesdev.com``` 
+
+Run ```SearchEngine.exe```, you'll see a small menu like follows:
+```
+Last build time:Oct 21 2018 21:49:19
+1. run URL crawling
+2. run content shortening
+3. start ranking downloaded content
+4. search pages
+101. exteral sort test
+102. winHttp page download
+103. database compress test
+Please select:
+```
+Great! The program is started successfully. Type ```1``` then press enter to start crawling.
+
+# Step 3: Web page crawling
+In crawling mode, there're some parameter that need to be entered:
+- ```number of threads```: This indicates number of con-current thread to crawl the internet. More threads will result in higher throughput but also result in high latency in slow network. Try to set it roughly as follows:
+   - <100Mbps network or for testing purpose: 100
+   - 200Mbps network: 200 - 300
+   - 500Mbps network: 500 - 1000
+   - 1Gbps network: 1000 or above
+
+- ```max crawling URLs```: This indicates the maximum number of pages the application is going to download. Try to set it as follows:
+   - 5GB free RAM:   100000000
+   - 10GB free RAM:  200000000
+   - 50GB free RAM: 1000000000
+   
+
+
+
