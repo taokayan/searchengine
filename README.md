@@ -232,7 +232,7 @@ Final:1014, read time:0ms, join/sort time:0ms, marshall time:94ms
 
 Enjoy your life with your own search engine!!! Please help to improve your own search engine.
 
-Donation addresses:
+If you wish to donate, here is my addresses:
 
 BTC: 1NLhfXbjZX18r9vucVhSDCKVkeD1mPA2N2
 
