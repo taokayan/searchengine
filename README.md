@@ -234,6 +234,7 @@ Enjoy your life with your own search engine!!! Please help to improve your own s
 
 Donation addresses:
 
-ETH: 0x48c5394db33aa419c40692cc42c97fb313422624
+BTC: 1NLhfXbjZX18r9vucVhSDCKVkeD1mPA2N2
 
-EOS: taokayan1111
+ETH: 0x5e994663a04261a98a477a620295f0e9934e5c34
+
