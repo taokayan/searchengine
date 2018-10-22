@@ -73,4 +73,57 @@ the meanings for each numbers are:
 Please notice that page downloading will run forever. To finish it manually, please type ```exit``` then enter, or kill the process.
 
 
+# Step 4: Page ranking, word extraction and reverse indexing
+If you have downloaded enough web pages at previous step, then it's excited to go forward. Restart the process then select ```3. start ranking downloaded content``` this time to start processing all downloaded pages!
+
+parameters:
+- # of iteration: number of iteration to run the page ranking algorithm. That is, start from equal weight for every pages, then contribute to each linking pages. You can try 5.
+- Override maxDBIndex: if you only want to process the first N pages, enter your number N. Otherwise, enter 0 to including all downloaded pages.
+- Max word per page: maximum number of extracted words per page. Normally I'll use 2000.
+
+Great, at this point you'll see the following tasks are performed:
+- link extraction
+- page ranking
+- word extraction and reverse indexing, this might take long time to finish
+- merge sort for all index, this might take long time to finish
+
+The process will exit after merge sort finished, for example:
+```
+1. run URL crawling
+2. run content shortening
+3. start ranking downloaded content
+4. search pages
+101. exteral sort test
+102. winHttp page download
+103. database compress test
+Please select:3
+# of iterations:5
+# downloaded pages = 40118, maxDBIndex = 40118
+Override maxDBIndex:0
+Max Words per Page:2000
+urlMD5 count = 40118, key2rank count = 40118
+Use the existing a pending rank file(pendingRank)?n
+Link extract:95.32% #ok = 34187(cur:1769/s avg:1699/s jobqueue:4049), #failed:0, #link:3458711, #oklink:642586
+Ranking iter 0: 100.00% processed 736053 total 736054 ok 736053 failed 0
+Ranking iter 1: 100.00% processed 736053 total 736054 ok 736053 failed 0
+Ranking iter 2: 100.00% processed 736053 total 736054 ok 736053 failed 0
+Ranking iter 3: 100.00% processed 736053 total 736054 ok 736053 failed 0
+Ranking iter 4: 100.00% processed 736053 total 736054 ok 736053 failed 0
+maxRank 100.000000 minRank 0.151795 avgRank 0.664481
+Ranking finished. Reverse Indexing starts...
+#pages 36021(89.79% 3442/s) words:21494113 non-En-Words:1946721 maxWords:2000 smallWords:10938436 inQueue:4093 outQueue:0
+Word/Pharse extraction completed, closing database...
+Reverse Indexing, merge sort begins...
+Exsort:flush dbs\finaldict_0, nThreads 4, sortTime 6375ms, nItems 23816896, nflushed 23816896
+Exsort dbs\finaldict OK, 23816896 items, time 6172ms
+main word/phrase dictionary built.
+Exsort:flush dbs\finaldictSmall_0, nThreads 4, sortTime 3047ms, nItems 12159812, nflushed 12159812
+Exsort dbs\finaldictSmall OK, 12159812 items, time 1613ms
+small word dictionary built.
+
+Reverse Indexing finished!!! time:29070ms
+```
+
+
+
 
