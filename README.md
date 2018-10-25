@@ -6,20 +6,20 @@ A light weight webpage crawler and search engine with the following advantages:
 - Support HTTP & HTTPS webpages.
 - Crawling with heuristic, avoid frequent http requests to the same host.
 - Support billions of pages, no theorectical limit.
-- Ultra low memory usage: overall memory usage linear to 64MB / million pages, or 64GB / billion pages.
+- Ultra low memory usage: overall memory usage under 48MB / million pages, or 48GB / billion pages.
 - Low harddisk usage: less than 50KB per page storage, including reverse indexing storage. 1 billion pages only need 50TB
 - Optimized for harddisk: less than 50 harddisk access per second, no SSD required
 - Optimized for reverse-indexing with in-place merge sort, O(log N) hard-disk access for each searching key word
-- Multi-language searching support: support all UTF-8 compatible searching characters. 
+- Multi-language searching support: support all UTF-8 compatible searching characters, especially Chinese.
 
-ref: http://dujiaen.blogspot.com/
+detailed technical reference: http://dujiaen.blogspot.com/
 
 # Usage:
 
-# Step 1 (Optional): Compile Your own WebCrawler & Search Engine:
+# 1 (Optional): Compile Your own WebCrawler & Search Engine:
 Download SearchEngine & Multiplexer(light weight library). Open SearchEngine\SearchEngine.sln using Visual Studio 2017 and then build the whole project. You'll find SearchEngine\x64\Release\SearchEngine.exe will be successfully created if compilation success.
 
-# Step 2: Initial Setup
+# 2: Initial Setup
 In SearchEngine\x64\Release, create a folder called ```dbs```, then create a file called ```urls.txt``` inside ```dbs```. Open ```urls.txt```, enter one or more initial URLs line by line, for example: ```nesdev.com``` 
 
 Run ```SearchEngine.exe```, you'll see a small menu like follows:
@@ -36,7 +36,7 @@ Please select:
 ```
 Great! The program is started successfully. Type ```1``` then press enter to start crawling.
 
-# Step 3: Web page crawling
+# 3: Web page crawling
 In crawling mode, there're some parameter that need to be entered:
 - ```number of threads```: This indicates number of con-current thread to crawl the internet. More threads will result in higher throughput but also result in high latency in slow network. Try to set it roughly as follows:
    - <100Mbps network or for testing purpose: 100
@@ -73,7 +73,7 @@ the meanings for each numbers are:
 Please notice that page downloading will run forever. To finish it manually, please type ```exit``` then enter, or kill the process.
 
 
-# Step 4: Page ranking, word extraction and reverse indexing
+# 4: Page ranking, word extraction and reverse indexing
 If you have downloaded enough web pages at previous step, then it's excited to go forward. Restart the process then select ```3. start ranking downloaded content``` this time to start processing all downloaded pages!
 
 parameters:
@@ -124,8 +124,8 @@ small word dictionary built.
 Reverse Indexing finished!!! time:29070ms
 ```
 
-# Step 5: Search pages by key word
-Congratulation, you can use your search engine to search! Restart the process and select ```4. search pages``` to start searching. 
+# 5: Search pages by key word
+Congratulation, you can now use your search engine to search! Restart the process and select ```4. search pages``` to start searching. 
 
 Note: Please type lower case letter only for English. Also you can use Chinese, Japanese or other languages. Use space to separate each keyword, and use ```"``` to quote the keyword that contain space. For example:
 
@@ -226,7 +226,21 @@ smallDict: 12006865-12007879(1014)
 Final:1014, read time:0ms, join/sort time:0ms, marshall time:94ms
 ```
 
-
+- Detail result explaination:
+```
+23124:1.145e+00 [8(r:3.82e-01) 9(r:3.82e-01)(c:1) 10(r:3.81e-01)(c:1) ] [Kowloon, Hong Kong - Weather Forecasts | Maps | News - Yahoo Weather] [https://www.yahoo.com/news/weather]
+[hong]:2048 [kong]:1941 [weather]:1528 utf8:68 6f 6e 67 20 6b 6f 6e 67 20 77 65 61 74 68 65 72
+Final:77, read time:16ms, join/sort time:0ms, marshall time:15ms
+```
+- 1st number ```23124```: the index of the page in content DB
+- ```1.145e+00```: overall ranking for this page under this search
+- ```8(r:3.82e-01)```: the location of ```hong``` is 8 in this page, and the ranking of this word in this page is 3.82e-01
+- ```9(r:3.82e-01)(c:1)```: location of ```kong``` is 9 in this page, and the ranking of this word is 3.82e-01, and the location difference between ```hong``` and ```kong``` is 1
+- ```10(r:3.81e-01)(c:1)```: location of ```weather``` is 10 in this page, ranking 3.81e-01, location difference between ```kong``` and ```weather``` is 1
+- ```Kowloon, Hong Kong - Weather Forecasts | Maps | News - Yahoo Weather``` page title
+- ```https://www.yahoo.com/news/weather``` page link
+- ```[hong]:2048```: there are 2048 pages containing keyword ```hong```
+- ```Final:77```: there are 77 pages containing ```hong``` and ```kong``` and ```weather```.
 
 
 
