@@ -13,7 +13,7 @@ A light weight webpage crawler and search engine with the following advantages:
 - Multi-language searching support: support all UTF-8 compatible searching characters, especially Chinese.
 
 Version 1.1
-- Prevent DOS attack: limiting 1 request per 15 sec to the same domain
+- Avoid DOS attack: limiting 1 request per 15 sec to the same domain
 - Optimized for result display: only the best URL will be shown per domain
 - Further Optimized for spinning harddisk access
 
