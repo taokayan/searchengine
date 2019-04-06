@@ -29,6 +29,9 @@ struct SearchParams {
 	bool  m_mergeHost;
 	int   m_maxShow;
 	int   m_maxSearch;
+
+	std::vector<KeyValDB_Key> m_pageMD5list;
+
 	SearchParams() : m_mergeHost(true), m_maxShow(200), m_maxSearch(100000000) { }
 };
 
@@ -295,6 +298,53 @@ l__next:
 	}
 }
 
+bool buildContentMD5(SearchParams *param) {
+	size_t dbsize = g_model.m_contentDB->count();
+	if (!dbsize) return false;
+	param->m_pageMD5list.resize(dbsize);
+	FILE *file = fopen(CONTENTMD5, "rb");
+	if (file) {
+		::_fseeki64(file, 0, SEEK_END);
+		long long s = ::_ftelli64(file);
+		size_t ok = 0;
+		if (s >= dbsize * 16) {
+			::_fseeki64(file, 0, SEEK_SET);
+			KeyValDB_Key hostmd5;
+			while (::fread(&hostmd5, sizeof(hostmd5), 1, file) > 0) {
+				param->m_pageMD5list[ok++] = hostmd5;
+			}
+		}
+		::fclose(file);
+		if (ok == dbsize) {
+			printf("Successfully read MD5 for %llu pages\n", dbsize);
+			return true;
+		}
+	}
+	printf("Building MD5 for each downloaded page...\n");
+	file = fopen(CONTENTMD5, "wb");
+	if (!file) {
+		printf("Failed to open %s for write...\n", (const char*)CONTENTMD5);
+		return false;
+	}
+	for (size_t i = 0; i < dbsize; i++) {
+		std::vector<char> data;
+		KeyValDB_Key key;
+		if (!g_model.m_contentDB->seek(i, &key)) continue;
+		g_model.m_contentDB->get(key, data);
+		std::string url, host, title;
+		int port;
+		getSelfURLfromContent(data, url, true);
+		::split(url.c_str(), host, port);
+		KeyValDB_Key hostmd5 = getMD5(host);
+		param->m_pageMD5list[i] = hostmd5;
+		//::fwrite(&hostmd5, sizeof(hostmd5), 1, file);
+	}
+	::fwrite(&(param->m_pageMD5list[0]), sizeof(KeyValDB_Key), param->m_pageMD5list.size(), file);
+	fclose(file);
+	printf("Successfully build MD5 for %llu pages\n", dbsize);
+	return true;
+}
+
 int searchPages() 
 {
 	SearchParams params;
@@ -317,6 +367,9 @@ int searchPages()
 		   g_model.m_contentDB->count(), nWords,
 		   g_model.m_contentDB->count() ? nWords / g_model.m_contentDB->count() : 0);
 	if (!nWords) return 2;
+
+	buildContentMD5(&params);
+	g_model.m_contentDB->createReadBuf(1024, 4096);
 
 	const int maxThreads = 32;
 	int nJointThreads = Utils::nCPUs();
@@ -425,24 +478,30 @@ int searchPages()
 		{
 			std::vector<std::string> outLines;
 			std::vector<std::string> outHosts;
-			std::map<std::string, int> seenHosts;
+			std::map<KeyValDB_Key, int> seenHosts;
 			Rank2Page::NodeRef node = rank2Page.last();
 			int showCount = params.m_maxShow;
 			for (; node && (showCount--); node = rank2Page.prev(node)) {
 				std::vector<char> pageContent;
+				
+				KeyValDB_Key hostmd5 = params.m_pageMD5list[node->m_val];
+				if (params.m_mergeHost && seenHosts.find(hostmd5) != seenHosts.end()) {
+					seenHosts[hostmd5]++;
+					showCount++;
+					continue;
+				}
+
 				KeyValDB_Key pageMD5;
 				if (g_model.m_contentDB->seek(node->m_val, &pageMD5))
 					g_model.m_contentDB->get(pageMD5, pageContent);
 				if (!pageContent.size()) continue;
+
 				std::string url, host, title;
 				int port;
 				getSelfURLfromContent(pageContent, url, true); 
 				::split(url.c_str(), host, port);
-				if (params.m_mergeHost && seenHosts.find(host) != seenHosts.end()) {
-					seenHosts[host]++;
-					continue;
-				} 
-				seenHosts[host] = 1;
+
+				seenHosts[hostmd5] = 1;
 				Page2WordRanks::NodeRef wordNode = 
 					page2WRanks[node->m_val & (nJointThreads-1)]->find(node->m_val);
 				std::string posStr;
@@ -464,7 +523,7 @@ int searchPages()
 				//										 (int)wordNode->m_val.wordLen());
 				//}
 				getTitlefromContent(pageContent, title, true);
-				char line[16384];
+				char line[8192];
 				int len = 0;
 				len = sprintf(line, "%u:%.3e %s [%s] [%s]\n", node->m_val,
 				 	          node->m_key, posStr.c_str(), title.c_str(), url.c_str());
@@ -473,9 +532,9 @@ int searchPages()
 			}
 			for (int i = outLines.size() - 1; i >= 0; i--) {
 				::fwrite(outLines[i].c_str(), 1, outLines[i].length(), stdout);
-				if (seenHosts[outHosts[i]] > 1) {
-					printf("(+%d pages for %s)\n", 
-						   (int)seenHosts[outHosts[i]], outHosts[i].c_str());
+				int dup;
+				if ((dup = seenHosts[getMD5(outHosts[i])]) > 1) {
+					printf("(+%d pages for %s)\n", (int)dup - 1, outHosts[i].c_str());
 				}
 			}
 		}

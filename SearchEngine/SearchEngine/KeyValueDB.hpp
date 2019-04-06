@@ -115,6 +115,10 @@ private:
   Lock                m_lock;
   bool                m_compress;
   bool                m_autoFlush;
+  bool                m_removeOnExit;
+  bool                m_readOnly;
+
+  std::string         m_keypath, m_valpath;
 
   enum _ { NCompRAM = 16 };
   KKAtomic<int>       m_compRAMIndex;
@@ -142,42 +146,58 @@ public:
     if (m_keyFile) fclose(m_keyFile);
     if (m_valFile) fclose(m_valFile);
     m_keyFile = m_valFile = 0;
+	if (m_removeOnExit) {
+		::remove(m_keypath.c_str());
+		::remove(m_valpath.c_str());
+	}
   }
   KeyValDB(const char *keyFilePath, const char *valFilePath, 
 	       bool clear = false, bool autoFlush = true, 
 		   bool compress = false, 
-		   size_t keyAppendBuf = 1048576 * 1,
-		   size_t valAppendBuf = 1048576 * 4)
+		   size_t keyAppendBuf = 256 * 1024, // 256k
+		   size_t valAppendBuf = 1048576 * 2, // 2M
+           bool removeOnExit = false, bool readOnly = false)
     : m_k2vOffset(8, 1)  {
-	m_keyBuf.resize(keyAppendBuf);
+	m_keypath = keyFilePath;
+	m_valpath = valFilePath;
 	m_valBuf.resize(valAppendBuf);
 	m_keyBufLen = m_valBufLen = 0;
     m_keyFileLen = m_valFileLen = 0;
 	m_compress = compress;
 	m_autoFlush = autoFlush;
+	m_removeOnExit = removeOnExit;
 	m_keyReadBufOffset = m_valReadBufOffset = 0;
 	m_keyReadBufLen = m_valReadBufLen = 0;
 	m_ioCount = 0;
+	m_readOnly = readOnly;
 	if (m_compress) {
 		for (int i = 0; i < sizeof(m_compRAM) / sizeof(m_compRAM[0]); i++) {
 			m_compRAM[i].alloc();
 		}
 	}
-	if (clear) {
-		FILE *f = ::fopen(keyFilePath, "w");
-		if (f) fclose(f);
-		f = ::fopen(valFilePath, "w");
-		if (f) fclose(f);
+
+	if (clear && removeOnExit) {
+		m_keyFile = 0;
+	} else {
+		if (clear) {
+			FILE *f = ::fopen(keyFilePath, "w");
+			if (f) fclose(f);
+			f = ::fopen(valFilePath, "w");
+			if (f) fclose(f);
+		}
+		m_keyFile = ::fopen(keyFilePath, "r+b");
+		if (!m_keyFile) {
+			m_keyFile = ::fopen(keyFilePath, "w+b");
+		}
+		else {
+			::_fseeki64(m_keyFile, 0, SEEK_END);
+			long long s = ::_ftelli64(m_keyFile);
+			if (s > 0)
+				m_keyFileLen = s / sizeof(KeyNode) * sizeof(KeyNode);
+		}
+		if (!m_keyFile) return;
 	}
-    m_keyFile = ::fopen(keyFilePath, "r+b");
-    if (!m_keyFile) {
-      m_keyFile = ::fopen(keyFilePath, "w+b");
-    } else {
-      ::_fseeki64(m_keyFile, 0, SEEK_END);
-      long long s = ::_ftelli64(m_keyFile);
-      if (s > 0) 
-        m_keyFileLen = s / sizeof(KeyNode) * sizeof(KeyNode);
-    }
+	if (keyAppendBuf) m_keyBuf.resize(keyAppendBuf);
 
     m_valFile = ::fopen(valFilePath, "r+b");
     if (!m_valFile) {
@@ -188,8 +208,7 @@ public:
       if (s > 0)
         m_valFileLen = (s + 7 ) / 8 * 8;
     }
-
-    if (!m_keyFile || !m_valFile) return;
+    if (!m_valFile) return;
 
     bool needseek = true;
     for (long long i = 0; i < m_keyFileLen; i+= sizeof(KeyNode)) {
@@ -214,6 +233,7 @@ public:
 
 private:
   void flushBuffer(bool flushFile = true) {
+	  if (m_readOnly) return;
 	  if (m_valBufLen) {
 		  ::_fseeki64(m_valFile, m_valFileLen, SEEK_SET);
 		  fwrite(&(m_valBuf[0]), m_valBufLen, 1, m_valFile);
@@ -223,17 +243,19 @@ private:
 		  else m_ioCount += 2;
 	  }
 	  if (m_keyBufLen) {
-		  ::_fseeki64(m_keyFile, m_keyFileLen, SEEK_SET);
-		  fwrite(&(m_keyBuf[0]), m_keyBufLen, 1, m_keyFile);
+		  if (m_keyFile) {
+			  ::_fseeki64(m_keyFile, m_keyFileLen, SEEK_SET);
+			  fwrite(&(m_keyBuf[0]), m_keyBufLen, 1, m_keyFile);
+		  }
 		  m_keyFileLen += m_keyBufLen;
 		  m_keyBufLen = 0;
-		  if (flushFile) { fflush(m_keyFile); m_ioCount += 3; }
+		  if (flushFile && m_keyFile) { 
+			  fflush(m_keyFile); m_ioCount += 3; 
+		  }
 		  else m_ioCount += 2;
 	  }
   }
   void pushKeyNode_(KeyNode &knode) {
-      if (!m_keyFile) return;
-
       Key2ValOffset::NodeRef n = m_k2vOffset.find(knode.m_key);
       if (n) n->m_val = knode.m_valFileOffset;
       else m_k2vOffset.insert(knode.m_key, knode.m_valFileOffset);
@@ -247,10 +269,10 @@ private:
 		return;
 	  } else {
 		flushBuffer();
-		::_fseeki64(m_keyFile, m_keyFileLen, SEEK_SET);
-		fwrite(&knode, sizeof(KeyNode), 1, m_keyFile);
+		if (m_keyFile) ::_fseeki64(m_keyFile, m_keyFileLen, SEEK_SET);
+		if (m_keyFile) fwrite(&knode, sizeof(KeyNode), 1, m_keyFile);
 		m_keyFileLen += sizeof(KeyNode);
-		fflush(m_keyFile);
+		if (m_keyFile) fflush(m_keyFile);
 		m_ioCount += 3;
 	  }
   }
@@ -285,20 +307,21 @@ private:
 
   size_t seekReadKey(void *buf, size_t size, size_t count, size_t offset) {
 	if (!(size * count)) return 0;
+	if (!m_keyFile) return 0;
 	if (!m_keyReadBuf.size() || m_keyReadBuf.size() < (size *count)) { 
 		m_ioCount += 2;
 		::_fseeki64(m_keyFile, offset, SEEK_SET);
 		return ::fread(buf, size, count, m_keyFile);
 	}
 	if (!((int64_t)offset >= m_keyReadBufOffset && 
-		  (int64_t)(offset + size * count) < m_keyReadBufOffset + m_keyReadBufLen)) {
+		  (int64_t)(offset + size * count) <= m_keyReadBufOffset + m_keyReadBufLen)) {
 		m_ioCount += 2;
 		::_fseeki64(m_keyFile, offset, SEEK_SET);
 		m_keyReadBufOffset = offset;
 		m_keyReadBufLen = ::fread(&(m_keyReadBuf[0]), 1, m_keyReadBuf.size(), m_keyFile);
 	}
 	if ((int64_t)offset >= m_keyReadBufOffset && 
-		(int64_t)(offset + size * count) < m_keyReadBufOffset + m_keyReadBufLen) {
+		(int64_t)(offset + size * count) <= m_keyReadBufOffset + m_keyReadBufLen) {
 		size_t bufOffset = offset - m_keyReadBufOffset;
 		memcpy(buf, &(m_keyReadBuf[bufOffset]), size * count);
 		return count;
@@ -313,14 +336,14 @@ private:
 		return ::fread(buf, size, count, m_valFile);
 	}
 	if (!((int64_t)offset >= m_valReadBufOffset && 
-		  (int64_t)(offset + size * count) < m_valReadBufOffset + m_valReadBufLen)) {
+		  (int64_t)(offset + size * count) <= m_valReadBufOffset + m_valReadBufLen)) {
 		m_ioCount += 2;
 		::_fseeki64(m_valFile, offset, SEEK_SET);
 		m_valReadBufOffset = offset;
 		m_valReadBufLen = ::fread(&(m_valReadBuf[0]), 1, m_valReadBuf.size(), m_valFile);
 	}
 	if ((int64_t)offset >= m_valReadBufOffset && 
-		(int64_t)(offset + size * count) < m_valReadBufOffset + m_valReadBufLen) {
+		(int64_t)(offset + size * count) <= m_valReadBufOffset + m_valReadBufLen) {
 		size_t bufOffset = offset - m_valReadBufOffset;
 		memcpy(buf, &(m_valReadBuf[bufOffset]), size * count);
 		return count;
@@ -337,6 +360,7 @@ public:
 	  m_valReadBuf.resize(valBufSize);
   }
   void flush() {
+	  if (m_readOnly) return;
 	  KKLockGuard<Lock> g(m_lock);
 	  flushBuffer(false);
 	  if (m_valFile) { fflush(m_valFile); m_ioCount++; }
@@ -360,7 +384,7 @@ public:
   bool seek(long long keyFileIndex, Key *key) {
 	  KKLockGuard<Lock> g(m_lock);
 	  if (!m_keyFile) return false;
-	  flush();
+	  if (!m_readOnly) flush();
 	  long long keyfileoffset = keyFileIndex * sizeof(KeyNode);
 	  if (keyfileoffset >= m_keyFileLen) return false;
 	  KeyNode keynode;
@@ -372,6 +396,7 @@ public:
   }
 
   int add(const Key &k, const char *data, int len) {
+	if (m_readOnly) return 0;
 	std::vector<unsigned char> encoded;
 	if (m_compress) {
 		encoded.reserve(len/2);
@@ -398,6 +423,9 @@ public:
   bool exist(const Key &k) {
 	KKLockGuard<Lock> g(m_lock);
     return m_k2vOffset.find(k);
+  }
+  bool exist_nolock(const Key &k) {
+	  return m_k2vOffset.find(k);
   }
   int get(const Key &k, std::vector<char> &data) {
 	KKLockGuard<Lock> g(m_lock);
@@ -436,6 +464,7 @@ public:
     return len;
   }
   void remove(const Key &k) {
+	if (m_readOnly) return;
 	KKLockGuard<Lock> g(m_lock);
     if (!exist(k)) return;
     KeyNode knode;
