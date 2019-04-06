@@ -95,21 +95,35 @@ struct ExternalSort_ImmReader
 {
 	std::string  m_path;
 	long long    m_offset;
-	bool         m_finished;
-	ExternalSort_ImmReader() : m_offset(0), m_finished(false) { }
-	void init(const char *path) {
+	bool         m_finished, m_autoclose;
+	FILE         *m_file;
+	ExternalSort_ImmReader() : m_offset(0), m_finished(false), m_autoclose(false), m_file(0){ }
+	~ExternalSort_ImmReader() { close(); }
+	void close() {
+		if (m_file) ::fclose(m_file);
+		m_file = 0;
+	}
+	void init(const char *path, bool autoclose) {
 		m_path = path;
 		m_offset = 0;
+		m_autoclose = autoclose;
+		if (m_file) ::fclose(m_file);
+		m_file = 0;
 	}
 	size_t fread(void *buf, size_t itemSize, size_t count) {
 		if (m_offset < 0) return 0;
-		FILE *f = ::fopen(m_path.c_str(), "rb");
-		if (!f) return 0;
-		::_fseeki64(f, m_offset, SEEK_SET);
-		long long r = ::fread(buf, itemSize, count, f);
+		if (!m_file) {
+			m_file = ::fopen(m_path.c_str(), "rb");
+			if (m_file) ::_fseeki64(m_file, m_offset, SEEK_SET);
+		}
+		if (!m_file) return 0;
+		long long r = ::fread(buf, itemSize, count, m_file);
 		if (r <= 0) m_offset = -1;
 		else m_offset += r * itemSize;
-		::fclose(f);
+		if (m_autoclose) {
+			::fclose(m_file);
+			m_file = 0;
+		}
 		return r;
 	}
 };
@@ -118,19 +132,20 @@ template <typename T, typename Base = KKNul, typename Lock = KKLock>
 class ExternalSorter : public Base
 {
 public:
-	enum _ { MaxThreads = 6, // 6-thread is optimal
+	enum _ { MaxThreads = 16,
 		     WriteBufSize = 1048576 * 16
 	       };
 private:
 	const size_t m_maxItemPerFile;
 	std::string m_path;  // prefix of path
 	int         m_fileIndex;
-	int         m_nFileSplit; // each file is splitted into multiple for storage saving
+	short       m_nThreads;
+	short       m_nFileSplit; // each file is splitted into multiple for storage saving
 	long long   m_currentFileItemCount;
 	FILE        *m_file; // current file
 	FILE        *m_mergedFile; // output
 	T           *m_items;
-	int         m_nThreads;
+	
 	std::vector<char> m_wBuf; // for flush
 	Lock        m_lock;
 
@@ -191,13 +206,14 @@ public:
 		size_t wcount = 0, twcount = 0;
 		size_t perfilemax = (m_currentFileItemCount / m_nFileSplit + 2);
 		int splitIndex = 0;
-		DWORD t = ::GetTickCount();
+		DWORD t0 = ::timeGetTime(), t1;
 		typedef ExternalSortWriter<T, KKObject> Writer;
 		KKLocalRef<Writer> writers = new Writer(m_file);
 		KKLocalRef<Writer::Job> writerJob = 
 			new Writer::Job(WriteBufSize);
 		if (m_nThreads <= 1 || m_nThreads * m_nThreads >= m_currentFileItemCount) {
 			qsort_(m_items, m_currentFileItemCount);
+			t1 = ::timeGetTime();
 			::fseek(m_file, 0, SEEK_SET);
 			wcount = fwrite(m_items, sizeof(T), m_currentFileItemCount, m_file);
 			twcount += wcount;
@@ -214,6 +230,7 @@ public:
 				ends[i] = starts[i] + (i == m_nThreads - 1 ? lastNItem : itemPerThread);
 			}
 			for (int i = 0; i < m_nThreads - 1; i++) tasks[i].join();
+			t1 = ::timeGetTime();
 			while (true) {
 				int p = -1;
 				for (int i = 0; i < m_nThreads; i++) {
@@ -242,13 +259,14 @@ public:
 			}
 			writers->push(writerJob);
 			writers->stop();
+
 			twcount += wcount;
 		}
 		if (m_file) ::fclose(m_file);
 		m_file = 0;
-		t = ::GetTickCount() - t;
-		printf("Exsort:flush %s_%d, nThreads %d, sortTime %ums, nItems %lld, nflushed %d\n", 
-			   m_path.c_str(), m_fileIndex, m_nThreads, t, m_currentFileItemCount, twcount);
+		DWORD t2 = ::timeGetTime();
+		printf("Exsort:%s_%d, nThreads %d, sortTime %dms, flushTime %dms, nflushed %llu\n", 
+			   m_path.c_str(), m_fileIndex, m_nThreads, t1 - t0, t2 - t1, twcount);
 		m_fileIndex++;
 		m_currentFileItemCount = 0;
 	}
@@ -344,8 +362,9 @@ public:
 		// build heap
 		std::vector<int> splitIndexes;
 		splitIndexes.resize(m_fileIndex + 1, 0);
+		int maxopenfiles = ::_getmaxstdio();
 		for (int i = 0; i < m_fileIndex; i++) {
-			files[i].init(getPath(i, 0).c_str());
+			files[i].init(getPath(i, 0).c_str(), i < (maxopenfiles - 20) ? false : true);
 			readAheadLens[i] = files[i].fread(&(m_items[i * readAheadSize]), sizeof(T), readAheadSize);
 			readAheadOffsets[i] = 0;
 			if (readAheadLens[i] < 0) {
@@ -392,9 +411,10 @@ retry:
 				readAheadOffsets[fileInd] = 0;
 				if (readAheadLens[fileInd] <= 0) {
 					readAheadLens[fileInd] = 0;
+					files[fileInd].close();
 					::remove(getPath(fileInd, splitIndexes[fileInd]).c_str());
 					if (++splitIndexes[fileInd] < m_nFileSplit) {
-						files[fileInd].init(getPath(fileInd, splitIndexes[fileInd]).c_str());
+						files[fileInd].init(getPath(fileInd, splitIndexes[fileInd]).c_str(), files[fileInd].m_autoclose);
 						goto retry;
 					} else {
 						files[fileInd].m_finished = true;

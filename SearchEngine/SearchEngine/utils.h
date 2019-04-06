@@ -14,7 +14,6 @@ inline int nCPUs() {
 	::GetSystemInfo( &sysinfo );
 	int r = sysinfo.dwNumberOfProcessors;
 	if (r < 1) r = 1;
-	if (r > 8) r = 8;
 	return r;
 }
 

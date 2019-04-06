@@ -34,7 +34,7 @@ bool downloadEx(const char *host, int port,
 	  HINTERNET  hSession = NULL, 
 				 hConnect = NULL,
 				 hRequest = NULL;
-	  WCHAR wHost[512], wPath[2048];
+	  WCHAR wHost[1024], wPath[2048];
 	  WCHAR wAgent[32];
 	  volatile int check = 0;
 
@@ -80,9 +80,10 @@ bool downloadEx(const char *host, int port,
 		bResults = WinHttpReceiveResponse( hRequest, NULL );
 	  check = 7;
 	  // Keep checking for data until there is nothing left.
+
 	  if( bResults )
 	  {
-		size_t res_size = 65536;
+		size_t res_size = 16384;
 		outData.reserve(res_size);
 		do
 		{
@@ -96,22 +97,11 @@ bool downloadEx(const char *host, int port,
 			  navail = maxLen - osize;
 		  }
 		  if (navail <= 0) break;
-
-		  if (osize + navail > res_size) {
-			  do {
-				  size_t ns = res_size * 2;
-				  if (ns > maxLen) { 
-					  res_size = maxLen; 
-					  break;
-				  }
-				  res_size = ns;
-			  } while (osize + navail > res_size);
-			  outData.reserve(res_size);
-		  }
+		  navail += 4096;
 		  outData.resize(osize + navail);
 		  nread = 0;
 		  if( !WinHttpReadData(hRequest, (LPVOID)&(outData[osize]), 
-							   navail, (LPDWORD)&nread) ) break;
+							   navail - 32, (LPDWORD)&nread) ) break;
 		  if (nread < 0) nread = 0;
 		  outData.resize(osize + nread);
 		} while( navail > 0 );

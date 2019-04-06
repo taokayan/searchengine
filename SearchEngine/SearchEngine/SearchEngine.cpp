@@ -49,12 +49,13 @@ int getURLs(std::vector<char> &data, const std::string &host, bool host_https,
 	if (indexEnd <= 0) return 0;
 	std::string u;
 	u.reserve(2048);
+	KKHash<KeyValDB_Key, KKNul, KKNul, KKNoLock> seenUrl;
 	for (int i = 0; i < indexEnd; i++) {
 		bool https = false;
 		int offset = Utils::findchar(&(data[i]), indexEnd - i, 'h'); // short cut
 		if (offset < 0) break;
-		if (*(uint32_t *)&(data[offset + i]) != *(uint32_t *)"href") continue;
 		i += offset;
+		if (*(uint32_t *)&(data[i]) != *(uint32_t *)"href") continue;
 		u.clear();
 		int p = i;
 		bool samehost = false;
@@ -97,11 +98,15 @@ int getURLs(std::vector<char> &data, const std::string &host, bool host_https,
 		if (u.length()) {
 			if ((samehost && host_https) || 
 				(!samehost && https)) u = "https://" + u;
-			if (pushPending) g_model.pushPending(u, true);
-			if (outURLs && Model::truncateURL(u)) {
-				outURLs->insert(u);
+			KeyValDB_Key md5 = getMD5(u);
+			if (!seenUrl.find(md5)) {
+				seenUrl.insert(md5);
+				if (pushPending) g_model.pushPending(u, true);
+				if (outURLs && Model::truncateURL(u)) {
+					outURLs->insert(u);
+				}
+				count++;
 			}
-			count++;
 		}
 		i = p;
 	}
@@ -150,10 +155,10 @@ int shortenData(const std::vector<char> &data_,
 
 	std::vector<char> data;
 	removeComment(data_, data);
-	shortenData.reserve(data.size() * 0.75 + 4);
+	shortenData.reserve(data.size() / 2 + 8);
 
 #define IGNORE_(begin_str, end_str) \
-	if (memcmp(&(data[i]), begin_str, sizeof(begin_str)-1)==0) { \
+	if (i <= data.size() - (sizeof(begin_str)-1) && memcmp(&(data[i]), begin_str, sizeof(begin_str)-1)==0) { \
 		i += sizeof(begin_str)-1;\
 		while (i < data.size() - sizeof(end_str) && \
 				memcmp(&(data[i]), end_str, sizeof(end_str)-1) != 0) i++;\
@@ -163,14 +168,14 @@ int shortenData(const std::vector<char> &data_,
 	}
 
 #define PRESERVE_(begin_str, end_str) \
-	if (memcmp(&(data[i]), begin_str, sizeof(begin_str)-1)==0) { \
+	if (i <= data.size() - (sizeof(begin_str)-1) && memcmp(&(data[i]), begin_str, sizeof(begin_str)-1)==0) { \
 		int oldi = i;\
 		i += sizeof(begin_str)-1;\
 		while (i < data.size() - sizeof(end_str) && \
 				memcmp(&(data[i]), end_str, sizeof(end_str)-1) != 0) i++;\
 		i += sizeof(end_str)-1;\
 		while (i < data.size() && data[i] != '>') i++;\
-		i++; \
+		i++; if (i >= data.size()) i = data.size(); \
 		while (oldi < i) shortenData.push_back(data[oldi++]);\
 		continue;\
 	}
@@ -558,8 +563,7 @@ void getWords_helper(KKQueue<KKLocalRef<GetWordsParam> > *inqueue,
 }
 
 // download from url
-void download(std::string url_, KeyValDB_Key md5, std::string &host, 
-			  KKHash<uint32_t> *recentHostHashs)
+void download(std::string url_, KeyValDB_Key md5, std::string &host)
 {
 	int port = 80;
 	const char *url = split(url_.c_str(), host, port);
@@ -580,16 +584,6 @@ void download(std::string url_, KeyValDB_Key md5, std::string &host,
 			if (badhostNode && badhostNode->m_val > MAXHOSTTRY && (rand() % 10) > 0) {
 				return;
 			}
-		}
-	}
-
-	if (recentHostHashs) {
-		uint32_t h = Model::hostCollisionHash(host);
-		if (recentHostHashs->find(h)) {
-			::Sleep(1000); // avoid frequent attack
-			recentHostHashs->clear();
-		} else {
-			recentHostHashs->insert(h);
 		}
 	}
 
@@ -648,6 +642,7 @@ void download(std::string url_, KeyValDB_Key md5, std::string &host,
 			//	   data.size(), url_.c_str(), t1-t0, t2-t1, t3-t2);
 		
 			KKLockGuard<KKLock> g(g_model.m_lock);
+			g_model.onDownloaded(host);
 			g_model.m_connTime += t1 - t0;
 			g_model.m_recvTime += t2 - t1;
 			g_model.m_parseTime += t3 - t2;
@@ -662,9 +657,6 @@ void download(std::string url_, KeyValDB_Key md5, std::string &host,
 		}
 	}
 	DWORD t4 = ::timeGetTime();
-	if (t4 - t0 >= 1000) {
-		if (recentHostHashs) recentHostHashs->clear();
-	}
 	return;
 
 connect_fail:
@@ -680,23 +672,24 @@ connect_fail:
 void crawlingThread(bool *stop, int nThreads, int threadInd) {
 	int pendDBInd = threadInd % g_model.m_pendDBTotal;
 	bool idle = false;
+	int nextDownloadTime = ::timeGetTime();
 	::Sleep(rand() % (DOWNLOADTIMEOUT + 1)); // randomize start time
-	long long nextDownloadTime = 0;
 	KKHash<uint32_t> recentHostHashs;
+	std::vector<char> urls;
+	urls.reserve(102400);
 	while (!*stop) {
-		std::vector<char> urls;
 		std::string url, host;
 		KeyValDB_Key md5;
 		KeyValDB_Key pendingInd;
 		Model::PendDB *pendDB = &(g_model.m_pendDB[pendDBInd]);
+		int dt = nextDownloadTime - ::timeGetTime();
+		if (dt > 0) ::Sleep(dt < DDOSDELAY ? dt : DDOSDELAY);
 		int r = pendDB->getURLs(urls, url, md5);
 		if (r == 0) {
+			// no URL to download
 			g_model.m_nIdleThreads++;
-			if (g_model.m_nIdleThreads == nThreads) {
-				*stop = 1;
-			}
 			idle = true;
-			::Sleep(1000 + rand() % 1000); 
+			::Sleep(rand() % 500);
 			g_model.m_nIdleThreads--;
 			continue;
 		}
@@ -705,39 +698,71 @@ void crawlingThread(bool *stop, int nThreads, int threadInd) {
 			g_model.m_processingUrls.insert(md5);
 			g_model.m_pendingURLs.remove(md5);
 			if (url.length()) {
-				long long dt = nextDownloadTime - ::timeGetTime();
-				if (dt > 0) ::Sleep(dt < 1000 ? dt : 1000);
-				nextDownloadTime = ::timeGetTime() + 1000;
-				download(url, md5, host, &recentHostHashs);
+				nextDownloadTime = ::timeGetTime() + DDOSDELAY;
+				download(url, md5, host);
 			}
 			continue;
 		}
 		else if (urls.size()) {
+			KKHash<KeyValDB_Key, int> hostLastTime;
 			idle = false;
 			int offset = 0, processedCount = 0;
 			int failedremove = 0;
+			std::vector<std::string> urllist;
+			std::vector<KeyValDB_Key> urlMD5list;
+			std::vector<KeyValDB_Key> hostlist;
+			urllist.reserve(100);
 			while (offset < urls.size() - 1) {
-				int len = 1;
-				while (offset + len < urls.size() && urls[offset+len] != 0) len++;
+				int len = 1, port;
+				while (offset + len < urls.size() && urls[offset + len] != 0) len++;
 				if (offset + len + sizeof(KeyValDB_Key) >= urls.size()) break;
 				urls[offset + len] = 0;
 				url = (const char *)&(urls[offset]);
-				md5 = *(KeyValDB_Key *)&(urls[offset+len+1]);
+				md5 = *(KeyValDB_Key *)&(urls[offset + len + 1]);
+				::split(url.c_str(), host, port);
+				if (url.length()) {
+					urllist.push_back(std::move(url));
+					urlMD5list.push_back(md5);
+					hostlist.push_back(getMD5(host));
+				}
+				offset += len + 1 + sizeof(KeyValDB_Key);
+			}
+			int remain = urllist.size();
+			while (remain--) {
+				// find the next URL that need minimal sleep time
+				int now = ::timeGetTime();
+				auto getSleepTime = [&](KeyValDB_Key hostmd5) -> int {
+					if (auto node = hostLastTime.find(hostmd5)) {
+						if (node->m_val + DDOSDELAY - now > 0)
+							return node->m_val + DDOSDELAY - now;
+					}
+					return 0;
+				};
+				int bestIndex = -1, bestSleep = 9999;
+				for (int i = 0; bestSleep > 0 && i < urllist.size(); i++) {
+					if (hostlist[i] == KeyValDB_Key()) continue;
+					int s = getSleepTime(hostlist[i]);
+					if (s < bestSleep) {
+						bestSleep = s; bestIndex = i;
+					}
+				}
+				if (bestIndex < 0) break;
+
+				md5 = urlMD5list[bestIndex];
+				url = std::move(urllist[bestIndex]);
+				KeyValDB_Key hostMD5 = hostlist[bestIndex];
 				g_model.m_processingUrls.insert(md5);
 				if (!g_model.m_pendingURLs.remove(md5)) failedremove++;
-				offset += len + 1 + sizeof(KeyValDB_Key);
-				if (url.length()) {
-					long long dt = nextDownloadTime - ::timeGetTime();
-					if (dt > 0) ::Sleep(dt < 1000 ? dt : 1000);
-					nextDownloadTime = ::timeGetTime() + 1000;
-					download(url, md5, host, &recentHostHashs);
-				}
+
+				if (bestSleep) ::Sleep(bestSleep);
+				now = ::timeGetTime();
+
+				hostLastTime.findInsert(hostMD5, now, true);
+				nextDownloadTime = now + DDOSDELAY;
+				download(url, md5, host);
 				processedCount++;
+				hostlist[bestIndex] = KeyValDB_Key();
 				if (*stop) break;
-			}
-			if (!*stop && (processedCount != PENDINGBULK || failedremove)) {
-				printf("Thread %d ERROR: processed %d urls, failed remove %d\n", 
-						::GetCurrentThreadId(), processedCount, failedremove);
 			}
 		}
 	}	
@@ -837,9 +862,11 @@ int runCrawling()
 	if (!g_model.m_pendingURLs.count()) {
 		std::string urlSeed;
 		::fflush(stdin);
-		printf("Please enter URL seed (e.g. http://nesdev.com/):");
-		std::getline(std::cin, urlSeed);
-		if (urlSeed.length()) g_model.pushPending(urlSeed, true);
+		do {
+			printf("\nPlease enter URL seed (e.g. http://nesdev.com/):");
+			std::getline(std::cin, urlSeed);
+		} while (!urlSeed.length());
+		g_model.pushPending(urlSeed, true);
 	}
 
 	printf("\n");
@@ -1007,7 +1034,7 @@ void rankingExtract(FILE *outFile, KKLock *flock,
 		for (std::set<std::string>::iterator it = urls.begin(); it != urls.end(); it++) {
 			KeyValDB_Key key2 = getMD5(*it);
 			//Key2Rank::NodeRef node2 = key2rank->find(key2);
-			if (g_model.m_contentDB->exist(key2)) { 
+			if (g_model.m_contentDB->exist_nolock(key2)) { 
 				LinkInfo p;
 				p.m_from = key, p.m_to = key2;
 				linkPairs.push_back(p);
@@ -1023,7 +1050,7 @@ void rankingExtract(FILE *outFile, KKLock *flock,
 					KKLockGuard<KKLock> g(*flock);
 					::fwrite(&(wbuf[0]), sizeof(LinkInfo), wbufLen / sizeof(LinkInfo), outFile);
 					wbufLen = 0;
-				} else if (wbufLen >= wbuf.size() / 8) {
+				} else if (wbufLen >= wbuf.size() / 2) {
 					bool r;
 					KKLockGuard<KKLock> g(*flock, r);
 					if (r) {
@@ -1259,11 +1286,11 @@ reverse_indexing:
 	GetWords_CommonParas params;
 
 	typedef ExternalSorter<DictWord, KKObject> ExSorter;
-	params.m_finalDict = new ExSorter(FINALDICT, true, -1, 1280 * 1048576ull / sizeof(DictWord), 10);
+	params.m_finalDict = new ExSorter(FINALDICT, true, -1, 2048 * 1048576ull / sizeof(DictWord), 10);
 
 	typedef ExternalSorter<DictWordSmall, KKObject> ExSorterSmall;
 	params.m_finalDictSmall = 
-		new ExSorterSmall(FINALDICTSMALL, true, -1, 512 * 1048576ull / sizeof(DictWordSmall), 4);
+		new ExSorterSmall(FINALDICTSMALL, true, -1, 640 * 1048576ull / sizeof(DictWordSmall), 4);
 
 	typedef KKQueue<KKLocalRef<GetWordsParam> > Queue;
 	Queue getWordsInQueue, getWordsOutQueue;
@@ -1317,11 +1344,11 @@ reverse_indexing:
 	g_model.m_contentDB = 0; // release database.
 	printf("Reverse Indexing, merge sort begins...\n");
 	t = ::timeGetTime();
-	size_t freeRAM = Utils::nFreeRAM() * 0.85;
+	size_t freeRAM = Utils::nFreeRAM() * 0.75;
 	if (freeRAM < 128 * 1048576) freeRAM = 128 * 1048576;
 	params.m_finalDict->exSort(true, freeRAM / sizeof(DictWord)); // 4G RAM
 	printf("main word/phrase dictionary built.\n");
-	freeRAM = Utils::nFreeRAM() * 0.75;
+	freeRAM = Utils::nFreeRAM() * 0.5;
 	if (freeRAM < 128 * 1048576) freeRAM = 128 * 1048576;
 	params.m_finalDictSmall->exSort(true, freeRAM / sizeof(DictWordSmall)); // 2G RAM
 	printf("small word dictionary built.\n");
@@ -1379,8 +1406,10 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	int sel = 0;
 	std::cout << "Last build time:" << __DATE__ << " " << __TIME__ << "\n";
+	int maxstdio = ::_setmaxstdio(2048);
+	std::cout << "Max stdio count is " << maxstdio << std::endl;
 	printf("1. run URL crawling\n");
-	printf("2. run content shortening\n");
+	printf("2. run content shortening (deprecated)\n");
 	printf("3. start ranking downloaded content\n");
 	printf("4. search pages\n");
 	printf("101. exteral sort test\n");
