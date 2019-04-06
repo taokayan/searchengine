@@ -11,7 +11,8 @@ A light weight webpage crawler and search engine with the following advantages:
 - Optimized for harddisk: less than 50 harddisk access per second, no SSD required
 - Optimized for reverse-indexing with in-place merge sort, O(log N) hard-disk access for each searching key word
 - Multi-language searching support: support all UTF-8 compatible searching characters, especially Chinese.
-# Version 1.1
+
+Version 1.1
 - Prevent DOS attack: limiting 1 request per 15 sec to the same domain
 - Optimized for result display: only the best URL will be shown per domain
 - Further Optimized for spinning harddisk access
