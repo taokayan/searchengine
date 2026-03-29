@@ -198,7 +198,7 @@ public:
 	}
 	size_t count() const { return m_count; }
 	NodeRef randNode() {
-		size_t r = rand() % (1ull<<m_nBits);
+		size_t r = ((rand() << 15) + rand()) % (1ull << m_nBits);
 		KKLockGuard<Lock> g(m_lock);
 		for (size_t i = 0; i < (1ull<<m_nBits); i++) {
 			size_t j = (i + r);

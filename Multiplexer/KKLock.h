@@ -16,7 +16,7 @@ typedef DWORD KKLock_TidT;
 #define KKLock_CurTid() ::GetCurrentThreadId()
 #define KKLock_Yield() ::SwitchToThread()
 
-#define KKLock_Counter 0
+#define KKLock_Counter 1
 
 template <typename T> class KKLockGuard;
 class KKObject;

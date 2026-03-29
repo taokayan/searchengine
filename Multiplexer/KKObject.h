@@ -378,6 +378,14 @@ public:
 		m_objCount = 0;
 		assign(t);
 	}
+
+	inline KKRef(KKRef&& ref) : Super(ref) {}
+	template <typename U, typename LockU, bool IsStrong_>
+	inline KKRef(KKRef_<U, LockU, IsStrong_>&& t) {
+		m_objCount = 0;
+		assign(t);
+	}
+
 	inline KKRef &operator =(const KKRef &t) {
 		Super::operator=(t);
 		return *this;
@@ -387,6 +395,16 @@ public:
 		Super::operator=(t);
 		return *this;
 	}
+	inline KKRef& operator =(KKRef&& t) {
+		Super::operator=(t);
+		return *this;
+	}
+	template <typename U, typename LockU, bool IsStrong_>
+	inline KKRef& operator =(KKRef_<U, LockU, IsStrong_>&& t) {
+		Super::operator=(t);
+		return *this;
+	}
+
 	KKRef &operator =(T *o) {
 		set_(o);
 		return *this;
@@ -425,6 +443,11 @@ public:
 		m_objCount = 0;
 		assign(t);
 	}
+	template <typename U, typename LockU, bool IsStrong_>
+	inline KKLocalRef(KKRef_<U, LockU, IsStrong_>&& t) {
+		m_objCount = 0;
+		assign(t);
+	}
 	inline KKLocalRef(T *o) {
 		if (o) { 
 			o->m_kkobjCount->addRef<true>();
@@ -442,6 +465,16 @@ public:
 		Super::operator=(t);
 		return *this;
 	}
+	inline KKLocalRef& operator =(KKLocalRef&& t) {
+		Super::operator=(t);
+		return *this;
+	}
+	template <typename U, typename LockU, bool IsStrong_>
+	inline KKLocalRef& operator =(KKRef_<U, LockU, IsStrong_>&& t) {
+		Super::operator=(t);
+		return *this;
+	}
+
 	KKLocalRef &operator =(T *o) {
 		set_(o);
 		return *this;
@@ -474,6 +507,8 @@ class KKWeakRef : public KKRef_<T, KKObject_Lock, false> {
 public:
 	inline KKWeakRef() { }
 	inline KKWeakRef(const KKWeakRef &ref) : Super(ref) { }
+	inline KKWeakRef(KKWeakRef&& ref) : Super(ref) {}
+
 	inline KKWeakRef &operator =(const KKWeakRef &t) {
 		Super::operator=(t);
 		return *this;
@@ -483,8 +518,24 @@ public:
 		m_objCount = 0;
 		assign(t);
 	}
+
+	inline KKWeakRef& operator =(KKWeakRef&& t) {
+		Super::operator=(t);
+		return *this;
+	}
+	template <typename U, typename LockU, bool IsStrong_>
+	inline KKWeakRef(KKRef_<U, LockU, IsStrong_>&& t) {
+		m_objCount = 0;
+		assign(t);
+	}
+
 	template <typename U, typename LockU, bool IsStrong_>
 	inline KKWeakRef &operator =(const KKRef_<U, LockU, IsStrong_> &t) {
+		Super::operator=(t);
+		return *this;
+	}
+	template <typename U, typename LockU, bool IsStrong_>
+	inline KKWeakRef& operator =(KKRef_<U, LockU, IsStrong_>&& t) {
 		Super::operator=(t);
 		return *this;
 	}

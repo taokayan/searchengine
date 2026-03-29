@@ -290,6 +290,27 @@ public:
 		} while (p);
 		return 0;
 	}
+
+	inline NodeRef randNode() {
+		Guard g(m_lock);
+		Node* p = m_root;
+		if (!p) return 0;
+		while (p) {
+			int ph = p->m_height;
+			if (ph >= 10) ph = 10;
+			int r = rand() % ((1 << ph) + 1);
+			if (r == 0) return p;
+			if (r & 1) {
+				if (p->m_left) p = p->m_left;
+				else return p;
+			}
+			else {
+				if (p->m_right) p = p->m_right;
+				else return p;
+			}
+		}
+		return p;
+	}
 	
 	inline NodeRef findInsert(const Key &key, const Val &val, 
 		                        bool override_ = false)
@@ -428,11 +449,12 @@ final:
 		return true;
 	}
 
-	void remove(const Key &key) 
+	bool remove(const Key &key) 
 	{
 		Guard g(m_lock);
 		NodeRef n = find(key);
-		if (n) remove((Node *)n);
+		if (n) return remove((Node*)n);
+		else return false;
 	}
 
 	NodeRef first() {

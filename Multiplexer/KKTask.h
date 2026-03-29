@@ -167,6 +167,10 @@ public:
 		KKLocalRef<KKTaskable> t = m_task;
 		if (t) t->join();
 	}
+	inline void reset() {
+		KKLocalRef<KKTaskable> t = m_task.xch(0);
+		if (t) t->join();
+	}
 
 	enum Lambda_ { Lambda };
 	template <typename T>

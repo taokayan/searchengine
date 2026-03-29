@@ -8,7 +8,7 @@
 #include "KKAtomic.hpp"
 #include "KKHash.hpp"
 
-// A queue that has no push lock
+// A queue that has no shared push and pop lock
 template <typename T, typename Base = KKNul, typename Lock = KKLock, typename NodeBase = KKObject>
 class KKQueue : public Base {
 public:
@@ -30,6 +30,7 @@ private:
 	KKAtomic<Node *>    m_head;
 	KKAtomic<Node *>    m_tail;
 	Lock                m_popLock;
+	Lock                m_pushLock;
 	bool                m_pending;
 
 private:
@@ -38,9 +39,17 @@ private:
 
 public:
 	KKQueue() : m_count(0), m_head(0), m_tail(0), m_pending(false) { }
+	~KKQueue() {
+		while (m_head) {
+			Node* next = m_head->m_next;
+			m_head->deRef();
+			m_head = next;
+		}
+	}
 	inline KKLocalRef<Node> push(Node *node) {
 		KKLocalRef<Node> ret = node;
 		node->addRef();
+		Guard g(m_pushLock);
 		volatile Node * volatile oldtail = m_tail.xch(node);
 		if (oldtail) oldtail->m_next = node;
 		else m_head = node;
@@ -97,6 +106,14 @@ private:
 
 public:
 	KKQueue2() : m_count(0), m_head(0), m_tail(0) { }
+	~KKQueue2() {
+		while (m_head) {
+			Node* next = m_head->m_next;
+			m_head->deRef();
+			m_head = next;
+		}
+	}
+
 	inline KKLocalRef<Node> push(Node *node) {
 		KKLocalRef<Node> ret = node;
 		node->addRef();
