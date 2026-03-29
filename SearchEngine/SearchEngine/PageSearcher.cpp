@@ -24,13 +24,209 @@
 #include "SearchEngine.h"
 #include "ExternalSorter.hpp"
 #include "BufferReader.h"
+#include "KKSocket.hpp"
+
+struct SearchClient : public KKObject {
+public:
+	KKSocket			m_socket;
+	bool                m_mobile = false;
+	std::map<std::string, std::vector<std::string> > params;
+	std::string         m_resultPage;
+
+	KKSemaphore         m_resultReady;
+};
+
+namespace {
+	KKQueue<KKRef<SearchClient> >  l_requestQueue;
+	KKHash<uint64_t, KKTask2<int, uint64_t, KKRef<SearchClient> >* > l_searchtasks;
+
+	// translate chars starting with %
+	std::string translateURLParam(const char* str, int len) {
+		std::string s;
+		for (int i = 0; i < len; i++) {
+			char c = str[i];
+			if (c != '%') s += c;
+			else if (i + 2 < len) {
+				char c1 = str[i + 1], c2 = str[i + 2];
+				int v1 = -1, v2 = -1;
+				if (c1 >= 'A' && c1 <= 'F') v1 = c1 - 'A' + 10;
+				else if (c1 >= 'a' && c1 <= 'f') v1 = c1 - 'a' + 10;
+				else if (c1 >= '0' && c1 <= '9') v1 = c1 - '0';
+
+				if (c2 >= 'A' && c2 <= 'F') v2 = c2 - 'A' + 10;
+				else if (c2 >= 'a' && c2 <= 'f') v2 = c2 - 'a' + 10;
+				else if (c2 >= '0' && c2 <= '9') v2 = c2 - '0';
+				if (v1 >= 0 && v2 >= 0) {
+					s += (char)((v1 << 4) | v2);
+					i += 2;
+					continue;
+				}
+				else break; // silence error
+			}
+			else break; // silence  error
+		}
+		return s;
+	}
+}
+
+int search_client_thread(uint64_t taskid, KKRef<SearchClient> client) {
+
+	std::string mainpage;
+
+	char req[8192] = {};
+	int req_len = client->m_socket.recv(req, 8000);
+
+	printf("REQUEST:\n%s\n\n\n", req);
+
+	const char* lines[64] = {};
+	int lines_count = 0;
+	const char* line_start = req;
+	while (line_start[0] && line_start[0] != '\n') {
+		const char* line_end = line_start;
+		while (line_end[0] && line_end[0] != '\n') line_end++;
+		if (line_end > line_start) {
+			lines[lines_count++] = line_start;
+			if (lines_count == sizeof(lines) / sizeof(lines[0])) break;
+			
+			if (line_end - line_start > 12 && memcmp(line_start, "User-Agent:", 11) == 0) {
+				for (const char* s = line_start + 12; s < line_end; s++) {
+					if (s[0] == 'A' && memcmp(s, "Android", 7) == 0) client->m_mobile = true;
+					else if (s[0] == 'M' && memcmp(s, "Mobile", 6) == 0) client->m_mobile = true;
+				}
+			}
+
+			if (line_end[0] == '\n') line_start = line_end + 1;
+			else break;
+		}
+		else break;
+	}
+	printf("Requet line count = %d, mobile = %d\n", lines_count, (int)client->m_mobile);
+
+	if (req_len >= 4 && memcmp(&req[0], "GET ", 4) == 0) {
+		const char* path = req + 4;
+		int path_len = 0;
+		while (path[path_len] != 0 && path[path_len] != '\n' && path[path_len] != '\r'
+			   && path[path_len] != '?' && path[path_len] != ' ' && path[path_len] != '\t') path_len++;
+		std::string pathstr(path, (size_t)path_len);
+
+		//std::cout << "path is:" << pathstr << std::endl;
+
+		const char* p = &(path[path_len]);
+		while (*p == '?' || *p == '&') {
+			const char* param_name = p + 1;
+			const char* q = param_name;
+			while (*q && *q != '\n' && *q != '\r' && *q != '=' && *q != ' ') q++;
+			std::string param_str = translateURLParam(param_name, size_t(q - param_name));
+			
+			const char* val = q;
+			while (*val == '=' || *val == '+') {
+				val++;
+				const char* val_end = val;
+				while (*val_end && *val_end != '\n' && *val_end != '\r' && *val_end != '+' && *val_end != '&' && *val_end != ' ') val_end++;
+				if (val_end > val) {
+					client->params[param_str].emplace_back(translateURLParam(val, size_t(val_end - val)));
+					//std::cout << "param: " << param_str << ":" << std::string(val, size_t(val_end - val)) << ", ";
+				}
+				else {
+					p = val_end; break;
+				}
+				val = val_end;
+			}
+			p = val;
+		}
+		
+		if (pathstr == "/" || pathstr == "/index.html" || pathstr == "/index.htm") {
+			mainpage =
+				"<!DOCTYPE html>"
+				"<html>"
+				"<title>Kayan's Search Engine</title>"
+				"<body>"
+				"Please enter your search item :"
+				"<form action = \"/search.html\" method = \"get\" target = \"_blank\">"
+				"<input type = \"text\" id = \"query\" name = \"query\" size=\"100%\"><br><br>"
+				"<input type = \"submit\" value = \"Search\">"
+				"</form>"
+				"</body>"
+				"</html>";
+		}
+		else if (pathstr == "/search.html") {
+			//std::cout << "Enter search!!!";
+			if (client->params["query"].size()) {
+				l_requestQueue.push(client);
+				client->m_resultReady.wait();
+				mainpage =
+					"<!DOCTYPE html>"
+					"<html>"
+					"<title>Search Results:</title>"
+					"<body>";
+				mainpage += client->m_resultPage;
+				mainpage += "</body></html>";
+			}
+			else {
+				mainpage =
+					"<!DOCTYPE html>"
+					"<html>"
+					"<title>Search Results:</title>"
+					"<body>";
+				mainpage += "ERROR no query data found from url";
+				mainpage += "</body></html>";
+			}
+		}
+		if (mainpage.length()) {
+			char header[1024] =
+				"HTTP / 1.1 200 OK\n"
+				"Content-Type: text/html; charset=UTF-8\n"
+				"Server: Windows 11\n"
+				"Content-Length: ";
+			sprintf(header + strlen(header), "%lld\n\n", mainpage.length());
+			mainpage = std::string(header) + mainpage;
+			int sent = 0;
+			while (sent < mainpage.length()) {
+				int r = client->m_socket.send(mainpage.data() + sent, mainpage.length() - sent);
+				if (r > 0) {
+					sent += r;
+				}
+				else break; // error
+			}
+			//std::cout << "RESPONSE:\n" << mainpage << std::endl;
+		}
+	}
+
+	client->m_socket.close(); // good luck
+	delete l_searchtasks.find(taskid)->m_val;
+	l_searchtasks.remove(taskid);
+
+	return mainpage.length();
+}
+
+void search_server(int listen_port) {
+	KKSocket listener;
+
+	listener.listen(listen_port, 0);
+
+	uint64_t id = 0;
+	while (true) {
+		KKRef< SearchClient> client = new SearchClient();
+		listener.accept(&(client->m_socket));
+
+		printf("accepted client %lld...\n", id);
+		
+		KKTask2<int, uint64_t, KKRef<SearchClient> > *task = 
+			new KKTask2<int, uint64_t, KKRef<SearchClient> >(&search_client_thread, id, client);
+		l_searchtasks.insert(id, task);
+
+		id++;
+		task->async();
+	}
+}
+
 
 struct SearchParams {
 	bool  m_mergeHost;
 	int   m_maxShow;
 	int   m_maxSearch;
 
-	std::vector<KeyValDB_Key> m_pageMD5list;
+	std::vector<KeyValDB_Key> m_pageMD5list; // store the host MD5 of the url
 
 	SearchParams() : m_mergeHost(true), m_maxShow(200), m_maxSearch(100000000) { }
 };
@@ -64,6 +260,20 @@ void searchRange(FILE *dictFile,
 		else lo = mid;
 	}
 	*endIndex = hi;
+
+	{// debug only
+		DictWordT word;
+		size_t checkIndexs[] = { *startIndex - 1, *startIndex, *endIndex - 1, *endIndex };
+		for (int i = 0; i < sizeof(checkIndexs) / sizeof(checkIndexs[0]); i++) {
+			size_t ind = checkIndexs[i];
+			if (ind >= 0 && ind < nWords) {
+				::_fseeki64(dictFile, ind * sizeof(DictWordT), SEEK_SET);
+				fread(&word, sizeof(DictWordT), 1, dictFile);
+				word.m_rank = 0; // field following word.m_word, used as null-terminator
+				printf("search Range: dict file index %llu: [%s]\n", ind, word.m_word);
+			}
+		}
+	}
 }
 
 void splitSentence(const std::string &s, std::vector<std::string> &words,
@@ -299,7 +509,7 @@ l__next:
 }
 
 bool buildContentMD5(SearchParams *param) {
-	size_t dbsize = g_model.m_contentDB->count();
+	size_t dbsize = g_model.m_contentDB->keyFileMaxIndex();
 	if (!dbsize) return false;
 	param->m_pageMD5list.resize(dbsize);
 	FILE *file = fopen(CONTENTMD5, "rb");
@@ -329,17 +539,21 @@ bool buildContentMD5(SearchParams *param) {
 	for (size_t i = 0; i < dbsize; i++) {
 		std::vector<char> data;
 		KeyValDB_Key key;
-		if (!g_model.m_contentDB->seek(i, &key)) continue;
+		if (!g_model.m_contentDB->seek(i, &key)) {
+			printf("unable to get key for index %lld...\n", i);
+			continue;
+		}
 		g_model.m_contentDB->get(key, data);
 		std::string url, host, title;
+		const char* host_str;
+		int host_len;
 		int port;
 		getSelfURLfromContent(data, url, true);
-		::split(url.c_str(), host, port);
-		KeyValDB_Key hostmd5 = getMD5(host);
+		::split(url.c_str(), &host_str, &host_len, &port);
+		KeyValDB_Key hostmd5 = getMD5(host_str, host_len);
 		param->m_pageMD5list[i] = hostmd5;
-		//::fwrite(&hostmd5, sizeof(hostmd5), 1, file);
+		::fwrite(&hostmd5, sizeof(hostmd5), 1, file);
 	}
-	::fwrite(&(param->m_pageMD5list[0]), sizeof(KeyValDB_Key), param->m_pageMD5list.size(), file);
 	fclose(file);
 	printf("Successfully build MD5 for %llu pages\n", dbsize);
 	return true;
@@ -348,6 +562,15 @@ bool buildContentMD5(SearchParams *param) {
 int searchPages() 
 {
 	SearchParams params;
+
+	printf("Server listen port:");
+	int listen_port = 0;
+	scanf("%d", &listen_port);
+
+	KKTask1<void, int> serverThread(&search_server, listen_port);
+	if (listen_port) {
+		serverThread.async();
+	}
 
 	if (!g_model.initDB4Searching()) {
 		printf("Failed to init DB...\n");
@@ -387,16 +610,37 @@ int searchPages()
 		KKBufferReader dictFileReader(dictFile), dictFileSmallReader(dictFileSmall);
 		Range ranges[MaxTerms];
 
-		// wait for input
-		std::string s_, inSentence, sentence;
-		printf("\nPlease input search item:");
-		std::getline(std::cin, s_);
-		inSentence = Utils::multiByteToUTF8(s_.c_str(), s_.length());
 		std::vector<std::string> words;
+		KKRef<SearchClient> sclient;
+		std::string sentence;
+
+		if (listen_port) {
+			while (l_requestQueue.count() == 0) {
+				::Sleep(1);
+			}
+			sclient = l_requestQueue.pop()->get();
+			words = sclient->params["query"];
+		}
+		else {
+			// wait for input
+			std::string s_, inSentence;
+			printf("\nPlease input search item:");
+			std::getline(std::cin, s_);
+			inSentence = Utils::multiByteToUTF8(s_.c_str(), s_.length());
+
+			for (int i = 0; i < inSentence.length(); i++) {
+				char c = inSentence[i];
+				if (c >= 'A' && c <= 'Z') { // to lower
+					c = c - 'A' + 'a';
+					inSentence[i] = c;
+				}
+			}
+			splitSentence(inSentence, words, sentence);
+			if (!words.size()) continue;
+		}
+		
 		std::vector<size_t> resultCount;
 
-		splitSentence(inSentence, words, sentence);
-		if (!words.size()) continue;
 
 		if (words[0].length() && words[0][0] == '#') {
 			cmdExec(words, params); 
@@ -497,9 +741,12 @@ int searchPages()
 				if (!pageContent.size()) continue;
 
 				std::string url, host, title;
+				const char* host_str;
+				int host_len;
 				int port;
 				getSelfURLfromContent(pageContent, url, true); 
-				::split(url.c_str(), host, port);
+				::split(url.c_str(), &host_str, &host_len, &port);
+				host = std::string(host_str, (size_t)host_len);
 
 				seenHosts[hostmd5] = 1;
 				Page2WordRanks::NodeRef wordNode = 
@@ -525,10 +772,39 @@ int searchPages()
 				getTitlefromContent(pageContent, title, true);
 				char line[8192];
 				int len = 0;
-				len = sprintf(line, "%u:%.3e %s [%s] [%s]\n", node->m_val,
-				 	          node->m_key, posStr.c_str(), title.c_str(), url.c_str());
+				if (sclient) {
+					std::string host;
+					int host_start = url.find_first_of("https://");
+					if (host_start != std::string::npos) host_start += 8;
+					if (host_start == std::string::npos) {
+						host_start = url.find_first_of("http://");
+						if (host_start != std::string::npos) host_start += 7;
+					}
+					if (host_start == std::string::npos) host_start = 0;
+					int host_end = url.find_first_of('/', host_start);
+					if (host_end == std::string::npos) host_end = url.length();
+					len = sprintf(line, "<a href=\"%s\">[%s] %s</a>\n", 
+						url.c_str(), 
+						url.substr(host_start, host_end - host_start).c_str(), 
+						title.c_str());
+				}
+				else {
+					len = sprintf(line, "%u:%.3e %s <a href=\"%s\">%s</a>\n", node->m_val,
+						node->m_key, posStr.c_str(), url.c_str(), title.c_str());
+				}
 				outLines.push_back(line);
 				outHosts.push_back(host);
+			}
+
+			if (sclient) {
+				char text[1024];
+				sprintf(text, "%llu Results:<br/>", (size_t)nResults);
+				sclient->m_resultPage += text;
+				for (int i = 0; i < outLines.size(); i++) {
+					sclient->m_resultPage += outLines[i];
+					sclient->m_resultPage += "<br/>";
+				}
+				sclient->m_resultReady.signal(1);
 			}
 			for (int i = outLines.size() - 1; i >= 0; i--) {
 				::fwrite(outLines[i].c_str(), 1, outLines[i].length(), stdout);

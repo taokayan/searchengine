@@ -1,16 +1,22 @@
 
 #include "stdafx.h"
+#include <Windows.h>
 #include <vector>
 
-namespace KeyValDB {
-	// tableSize need to be power of 2
-	static const int tableSize = 65536 * 4, collision = 3;
-	static const int bit1 = 2;
-	static const int bit2 = 5;
+#pragma comment(lib, "winmm.lib") 
 
-	inline unsigned int hash4(const unsigned char *p) {
-		unsigned int v = ((*(unsigned int*)p) & 0xffffff) * 0x9e3779b9;
-		v = v ^ (v >> 16);
+namespace KeyValDB {
+	// tableSize need to be power of 2, memory = tableSize * size(int)
+	static constexpr int tableSize = 65536, collision = 4;
+	static constexpr int bit1 = 2;
+	static constexpr int bit2 = 5;
+
+	inline uint32_t hash4(const unsigned char *p) {
+		uint32_t c1 = p[0], c2 = p[1], c3 = p[2], c4 = p[3];
+		constexpr uint32_t fac = 97;
+		constexpr uint32_t mod = 64;
+		uint32_t v = (c4 % mod) * (fac * fac * fac) + (c3 % mod) * (fac * fac) + (c2 % mod) * fac + (c1 % mod);
+		v *= collision;
 		return v;
 	}
 	inline unsigned char translate(unsigned char c) {
@@ -55,8 +61,9 @@ int KeyValDB_compress0(const unsigned char *in, int len,
 
 	size_t osize = out->size();
 	int i = 0, written = 0;
+	int safe_len = len - 4;
 	for (;i < len; i++) {
-		if (i >= len - 4) {
+		if (i >= safe_len) {
 			if (in[i] >= 0xfc) {
 				out->push_back(0xfc);
 				out->push_back(in[i]);
@@ -64,22 +71,32 @@ int KeyValDB_compress0(const unsigned char *in, int len,
 			continue;
 		}
 		unsigned int v = hash4(in + i);
-		unsigned ti = v % tableSize;
+		unsigned int ti = v % tableSize;
+		int tii_to_update = -1;
 		int okindex = -1, maxrepeat = 0, maxsave = 0;
-		for (int k = 0; k < collision; k++) {
-			unsigned tii = (ti + k) % tableSize;
-			if (table[tii] < 0) break;
-			if (table[tii] <= i - 65535) continue;
-			int repeat = 0;
-			int i0 = table[tii];
+		int min_back_i = i - 65534;
+		if (min_back_i < 0) min_back_i = 0;
+		for (unsigned int k = 0; k < collision; k++) {
+			unsigned int tii = (ti + k) % tableSize;
+			if (table[tii] < min_back_i) {
+				tii_to_update = tii;  continue;
+			}
+			int i0 = table[tii]; // previous i 
+			if (*(uint32_t*)&(in[i0]) != *(uint32_t*)&(in[i])) {
+				continue;
+			}
+			int repeat = 4;
 			while (i + repeat < len - 8 && repeat < 255-8 &&
 				   *(unsigned long long *)&(in[i0 + repeat]) == 
 				   *(unsigned long long *)&(in[i + repeat]))
 				   repeat += 8; // turbo
 			if (repeat < maxrepeat - 7) continue;
-			while (i + repeat < len && repeat-3 < 255 &&
+			while (i + repeat < len && repeat < 255 + 3 &&
 		           in[i0 + repeat] == in[i + repeat]) repeat++;
 			int di = i - i0;
+			// 2 bytes encoding: di < 64 && repeat < 7
+			// 3 bytes encoding: di < 2048 && repeat < 35
+			// 4 bytes encoding: di < 65536 && repeat < 259
 			int nsave = di < (1<<(8-bit1)) && repeat-3 < (1<<bit1) ? repeat - 2 :
 				        di < (1<<(16-bit2)) && repeat-3 < (1<<bit2) ? repeat - 3 : repeat - 4;
 			if (nsave > maxsave) {
@@ -106,28 +123,26 @@ int KeyValDB_compress0(const unsigned char *in, int len,
 			out->push_back(((i - okindex) >> 8));
 			out->push_back(maxrepeat-3);
 		}
-		unsigned minti = ti;
-		for (int k = 0; k < collision; k++) {
-			unsigned tii = (ti + k) % tableSize;
-			if (table[tii] < 0 || table[tii] <= i - 65535) {
-				table[tii] = i; minti = INT_MAX; break;
+		if (tii_to_update != -1) { // update table of data indexed i
+			table[tii_to_update] = i;
+		} else {
+			unsigned minti = ti;
+			for (int k = 1; k < collision; k++) {
+				unsigned tii = (ti + k) % tableSize;
+				if (table[tii] < table[minti]) minti = tii;
 			}
-			if (table[tii] < table[minti]) minti = tii;
+			table[minti] = i;
 		}
-		if (minti != INT_MAX) table[minti] = i;
-		if (maxrepeat) {
-			for (int j = 1; j < maxrepeat && i + j < len - 4; j++) {
+		if (maxrepeat) { // update table for data indexed from i+1 to i + maxrepeat
+			//printf("%d-%d-%d,",i,i-okindex, maxrepeat);
+			for (int j = 1; j < maxrepeat && i + j < safe_len; j++) {
 				v = hash4(in + (i + j));
-				minti = v % tableSize;
-				int k;
-				for (k = 0; k < collision; k++) {
+				unsigned minti = v % tableSize;
+				for (int k = 1; k < (collision >= 2 ? 2 : collision); k++) {
 					ti = (v + k) % tableSize;
-					if (table[ti] < 0 || table[ti] < i + maxrepeat - 65535) {
-						table[ti] = i + j; break;
-					}
 					if (table[ti] < table[minti]) minti = ti;
 				}
-				if (k >= collision) table[minti] = i + j;
+				table[minti] = i + j;
 			}
 			i += maxrepeat - 1;
 		}
@@ -141,52 +156,91 @@ int KeyValDB_decompress0(unsigned char *in, int len, std::vector<char> *decode)
 {
 	using namespace KeyValDB;
 	size_t osize = decode->size();
-	for (int i = 0; i < len;) {
-		unsigned char c = in[i++];
-		if (c <= 0xfc) {
-			if (c == 0xfc) {
-				if (i >= len) break;
-				decode->push_back(in[i++]);
-			}
-			else decode->push_back(c);
-			continue;
-		}
-		int di, rpt, len2;
-		if (c == 0xff) {
-			if (i + 3 > len) break;
-			di = *(unsigned short *)&(in[i]);
-			i+=2;
-			rpt = (int)in[i++] + 3;
-		} else if (c == 0xfe) {
-			if (i + 2 > len) break;
-			int t = *(unsigned short *)&(in[i]);
-			i+=2;
-			di = (t>>bit2);
-			rpt = (t&((1<<bit2)-1))+3;
-		} else {
-			if (i+1 > len) break;
-			int t = *(unsigned char *)&(in[i]);
-			i+=1;
-			di = (t>>bit1);
-			rpt = (t&((1<<bit1)-1))+3;
-		}
-		len2 = decode->size();
-		if (di > len2) {
-			break; // failed!!!
-		}
-		decode->resize(len2 + rpt);
-		int j = 0;
-		if (di >= 8) {
-			while (j < rpt - 7) {
-				*(unsigned long long *)&((*decode)[len2 + j]) 
-					= *(unsigned long long *)&((*decode)[len2 - di + j]);
-				j += 8;
-			}
-		}
-		for (; j < rpt; j++) {
-			(*decode)[len2 + j] = (*decode)[len2 - di + j];
-		}
+
+#define decompress0_main_logic \
+	if (c < 0xfc) {\
+		decode->push_back(c);\
+	}\
+	else if (c == 0xfc) {\
+		if (i >= len) break;\
+		decode->push_back(in[i++]);\
+	} else {\
+		int di, rpt, len2;\
+		if (c == 0xfd) { \
+			if (i + 1 > len) break;\
+			int t = *(unsigned char*)&(in[i]);\
+			i += 1;\
+			di = (t >> bit1);\
+			rpt = (t & ((1 << bit1) - 1)) + 3;\
+		} \
+		else if (c == 0xfe) {\
+			if (i + 2 > len) break;\
+			int t = *(unsigned short*)&(in[i]);\
+			i += 2;\
+			di = (t >> bit2);\
+			rpt = (t & ((1 << bit2) - 1)) + 3;\
+		} else { /* c= 0xff */ \
+			if (i + 3 > len) break; \
+			di = *(unsigned short*)&(in[i]); \
+			i += 2; \
+			rpt = (int)in[i++] + 3; \
+		}\
+		len2 = decode->size();\
+		if (di > len2) {\
+			break; /* failed!!!*/ \
+		}\
+		decode->resize(len2 + rpt);\
+		char *dest = (char *)&(*decode)[len2];\
+		const char* src = (char *)&(*decode)[len2 - di];\
+		if (di >= rpt) { \
+			memcpy(dest, src, rpt); \
+		} else { \
+			int j = 0; \
+			if (di >= 8) {\
+				while (j < rpt - 7) {\
+					*(uint64_t*)(dest + j) = *(uint64_t*)(src + j);\
+					j += 8;\
+				}\
+			}\
+			else if (di >= 4) {\
+				while (j < rpt - 3) {\
+					*(uint32_t*)(dest + j) = *(uint32_t*)(src + j);\
+					j += 4;\
+				}\
+			}\
+			for (; j < rpt; j++) {\
+				(*decode)[len2 + j] = (*decode)[len2 - di + j];\
+			}\
+		}\
 	}
+
+	int i = 0;
+	for (; i < len - 8; ) {
+#if 1
+		uint64_t c64 = *(uint64_t *)&(in[i]);
+		c64 >>= 1;
+		c64 &= 0x7f7f7f7f7f7f7f7full;
+		c64 += 0x0202020202020202ull;
+		if ((c64 & 0x8080808080808080ull) == 0ull) {
+			size_t _old_size = decode->size();
+			decode->resize(_old_size + 8);
+			*(uint64_t*)&((*decode)[_old_size]) = *(uint64_t*)&(in[i]);
+			i += 8; continue;
+		}
+#endif
+		unsigned char c = in[i++];
+		if (c < 0xfc) {
+			decode->push_back(c); c = in[i++];
+		}
+		decompress0_main_logic
+	}
+	for (; i < len;) {
+		unsigned char c = in[i++];
+		decompress0_main_logic
+	}
+
+#undef decompress0_main_logic
+
 	return decode->size() - osize;
 }
 
@@ -306,7 +360,7 @@ int KeyValDB_decompress(unsigned char *in, int len, std::vector<char> *decode)
 	return KeyValDB_decompress0(in, len, decode);
 }
 
-int KeyValDB_compressTest(const char *data, size_t len, const char *outfile)
+int KeyValDB_compressTest(const char *data, size_t len, const char *outfile, uint64_t &compTime, uint64_t &decompTime, int count)
 {
 	using namespace KeyValDB;
 	//for (int i = 0; i <= 256; i++) {
@@ -324,9 +378,24 @@ int KeyValDB_compressTest(const char *data, size_t len, const char *outfile)
 	std::vector<unsigned char> compData;
 	std::vector<char> decompData;
 	compData.reserve(len + 1);
-	int compSize = KeyValDB_compress((const unsigned char *)data, len, &compData, 0);
+	//decompData.reserve(len + 1);
+	uint64_t t0 = ::timeGetTime();
+	int compSize = 0;
+	for (int i = 0; i < count; i++) {
+		compData.clear();
+		compSize = KeyValDB_compress((const unsigned char*)data, len, &compData, 0);
+	}
+	uint64_t t1 = ::timeGetTime();
+	compTime = t1 - t0;
 	if (!compSize) return -1;
-	int decompSize = KeyValDB_decompress(&(compData[0]), compSize, &decompData);
+	int decompSize = 0;
+	for (int i = 0; i < count; i++) {
+		decompData.clear();
+		decompSize = KeyValDB_decompress(&(compData[0]), compSize, &decompData);
+	}
+	uint64_t t2 = ::timeGetTime();
+	decompTime = t2 - t1;
+
 	if (decompSize != len) return -2;
 	if (memcmp(data, &(decompData[0]), len)) return -3;
 	if (outfile) {

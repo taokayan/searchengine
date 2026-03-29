@@ -2,6 +2,7 @@
 //
 
 #include "stdafx.h"
+#include <io.h>
 #include <unordered_map>
 #include <map>
 #include <Windows.h>
@@ -20,7 +21,7 @@ int KeyValDB_compress(const unsigned char *in, int len,
 					  std::vector<unsigned char> *out, void *memory);
 int KeyValDB_decompress(unsigned char *in, int len, 
 						std::vector<char> *decode);
-int KeyValDB_compressTest(const char *data, size_t len, const char *fout);
+int KeyValDB_compressTest(const char *data, size_t len, const char *fout, uint64_t& compTime, uint64_t &decompTime, int count);
 
 struct KeyValDB_Key {
   unsigned long long m_k[2];
@@ -78,9 +79,13 @@ public:
 	  inline K2OHashVal(KeyValDB_Offset o) : m_offset(o) { }
   };
 
-  typedef typename KKHash<Key, K2OHashVal, KKNul, KKNoLock, KKNul> Key2ValOffset_;
-  typedef typename KKHash<Key, K2OHashVal, KKNul, KKNoLock, 
-	             KKHeapBase<sizeof(typename Key2ValOffset_::Node)> > Key2ValOffset;
+  // use KKHash
+  typedef typename KKHash<Key, K2OHashVal, KKNul, KKNoLock > Key2ValOffset_;
+  typedef typename KKHash<Key, K2OHashVal, KKNul, KKNoLock,
+	  KKHeapBase<sizeof(Key2ValOffset_::Node)> > Key2ValOffset;
+
+  // use Tree
+  //typedef typename KKAVLTree<Key, K2OHashVal, KKNul, KKNoLock> Key2ValOffset;
 
   typedef typename Key2ValOffset::Node    K2ONode;
   typedef typename Key2ValOffset::NodeRef K2ONodeRef;
@@ -120,7 +125,7 @@ private:
 
   std::string         m_keypath, m_valpath;
 
-  enum _ { NCompRAM = 16 };
+  enum _ { NCompRAM = 64 };
   KKAtomic<int>       m_compRAMIndex;
   CompressRAM         m_compRAM[NCompRAM];
 
@@ -152,19 +157,20 @@ public:
 	}
   }
   KeyValDB(const char *keyFilePath, const char *valFilePath, 
-	       bool clear = false, bool autoFlush = true, 
+	       bool clear = false,
 		   bool compress = false, 
-		   size_t keyAppendBuf = 256 * 1024, // 256k
-		   size_t valAppendBuf = 1048576 * 2, // 2M
+		   size_t keyAppendBuf = 4 * 1024, // 4k, set 0 to flush every time
+		   size_t valAppendBuf = 128 * 1024, // 128k, , set 0 to flush every time
            bool removeOnExit = false, bool readOnly = false)
-    : m_k2vOffset(8, 1)  {
+    //: m_k2vOffset(8, 1) // <--- KKHash only
+	{
 	m_keypath = keyFilePath;
 	m_valpath = valFilePath;
 	m_valBuf.resize(valAppendBuf);
 	m_keyBufLen = m_valBufLen = 0;
     m_keyFileLen = m_valFileLen = 0;
 	m_compress = compress;
-	m_autoFlush = autoFlush;
+	m_autoFlush = (keyAppendBuf == 0 || valAppendBuf == 0);
 	m_removeOnExit = removeOnExit;
 	m_keyReadBufOffset = m_valReadBufOffset = 0;
 	m_keyReadBufLen = m_valReadBufLen = 0;
@@ -205,30 +211,79 @@ public:
     } else {
       ::_fseeki64(m_valFile, 0, SEEK_END);
       long long s = ::_ftelli64(m_valFile);
-      if (s > 0)
-        m_valFileLen = (s + 7 ) / 8 * 8;
+	  m_valFileLen = s;
     }
     if (!m_valFile) return;
 
+	if (clear == false) {
+		printf("valFile %s's len=%lld\n", valFilePath, m_valFileLen);
+	}
+
     bool needseek = true;
+	bool erase_key = false;
+
+	long long truncate_keyFileLen = m_keyFileLen;
     for (long long i = 0; i < m_keyFileLen; i+= sizeof(KeyNode)) {
       KeyNode knode;
       if (needseek) ::_fseeki64(m_keyFile, i, SEEK_SET);
       needseek = false;
       if (fread(&knode, sizeof(KeyNode), 1, m_keyFile) == 1) {
         if (knode.m_valFileOffset < 0) {
-          m_k2vOffset.remove(knode.m_key);
-          if (knode.m_valFileOffset != -1) {
-            printf("error at key %llu\n", knode.m_key.m_k[0]);
-          }
+			if (knode.m_valFileOffset == -2) continue; // corrupted record in the past
+			else if (knode.m_valFileOffset == -1) {
+				m_k2vOffset.remove(knode.m_key);
+			} else {
+				printf("error at key %llu\n", knode.m_key.m_k[0]);
+				truncate_keyFileLen = i;
+				break;
+			}
         }
         else {
+		  if (knode.m_valFileOffset + 4 > m_valFileLen) {
+			  printf("val file corrupted starting from key file offset %lld (pointing valFileOffset %lld), need truncate key file\n", 
+					i, knode.m_valFileOffset);
+			  truncate_keyFileLen = i;
+			  break;
+		  } else if (i + 10 * sizeof(KeyNode) >= m_keyFileLen) { // check last N records
+			  ::_fseeki64(m_valFile, knode.m_valFileOffset, SEEK_SET);
+			  int val_len = 0;
+			  ::fread(&val_len, sizeof(val_len), 1, m_valFile);
+			  printf("key file last N records: key file offset %lld (valFileOffset %lld, val_len %d)",
+				  i, knode.m_valFileOffset, val_len);
+			  if (knode.m_valFileOffset + 4 + val_len > m_valFileLen) {
+				  printf("... ERROR! record corrupted\n");
+				  truncate_keyFileLen = i;
+				  break;
+			  }
+			  else {
+				  printf(" OK\n");
+			  }
+		  }
           Key2ValOffset::NodeRef n = m_k2vOffset.find(knode.m_key);
           if (n) n->m_val = knode.m_valFileOffset;
           else m_k2vOffset.insert(knode.m_key, knode.m_valFileOffset);
         }
-      } else needseek = true;
+	  }
+	  else {
+		  needseek = true;
+	  }
     }
+
+	if (!readOnly && truncate_keyFileLen < m_keyFileLen) {
+		printf("clearing last corrupt %lld record(s) from key file...\n", 
+			(m_keyFileLen - truncate_keyFileLen) / sizeof(KeyNode));
+		for (long long i = truncate_keyFileLen; i < m_keyFileLen; i += sizeof(KeyNode)) {
+			KeyNode knode;
+			::_fseeki64(m_keyFile, i, SEEK_SET);
+			if (fread(&knode, sizeof(KeyNode), 1, m_keyFile) == 1) {
+				knode.m_valFileOffset = -2;
+				::_fseeki64(m_keyFile, i, SEEK_SET);
+				::fwrite(&knode, sizeof(KeyNode), 1, m_keyFile);
+			}
+		}
+	}
+
+	::_fseeki64(m_valFile, 0, SEEK_END);
   }
 
 private:
@@ -262,7 +317,7 @@ private:
 
 	  if (!m_autoFlush) {
 		if (sizeof(KeyNode) + m_keyBufLen >= m_keyBuf.size()) {
-			flushBuffer();
+			flushBuffer(true);
 		}
 		memcpy(&(m_keyBuf[m_keyBufLen]), &knode, sizeof(KeyNode));
 		m_keyBufLen += sizeof(KeyNode);
@@ -280,7 +335,7 @@ private:
 	  if (!m_valFile) return -1;
 	  if (!m_autoFlush) {
 		  if (len + sizeof(len) + m_valBufLen >= m_valBuf.size()) {
-			  flushBuffer();
+			  flushBuffer(m_removeOnExit ? false : true);
 		  }
 	      if (len + sizeof(len) + m_valBufLen < m_valBuf.size()) {
 			  long long o = m_valFileLen + m_valBufLen;
@@ -291,7 +346,7 @@ private:
 			  return o;
 		  }
 	  }
-	  flushBuffer();
+	  flushBuffer(m_removeOnExit ? false : true);
       long long o = m_valFileLen;
       ::_fseeki64(m_valFile, m_valFileLen, SEEK_SET);
       ::fwrite(&len, sizeof(len), 1, m_valFile);
@@ -356,7 +411,7 @@ public:
 	  KKLockGuard<Lock> g(m_lock);
 	  m_keyReadBufLen = 0;
 	  m_valReadBufLen = 0;
-	  m_keyReadBuf.resize(keyBufSize);
+	  m_keyReadBuf.resize(keyBufSize / sizeof(KeyNode) * sizeof(KeyNode));
 	  m_valReadBuf.resize(valBufSize);
   }
   void flush() {
@@ -427,35 +482,33 @@ public:
   bool exist_nolock(const Key &k) {
 	  return m_k2vOffset.find(k);
   }
-  int get(const Key &k, std::vector<char> &data) {
+  int get(const Key &k, std::vector<char> &data, bool raw = false) {
 	KKLockGuard<Lock> g(m_lock);
     Key2ValOffset::NodeRef node = m_k2vOffset.find(k);
     if (!node) return -1;
     long long offset = node->m_val.m_offset;
     if (offset < 0 || !m_valFile) return -1;
+
 	if (!m_autoFlush && offset >= m_valFileLen) {
 		flush();
 	}
-   // ::_fseeki64(m_valFile, offset, SEEK_SET);
+	
     int len = 0;
-    //fread(&len, sizeof(int), 1, m_valFile);
 	seekReadVal(&len, sizeof(int), 1, offset);
     if (len < 0 || offset + len > m_valFileLen) {
       return -1;
     }
     if (len > 0) {
-		if (m_compress) {
+		if (m_compress && !raw) {
 			std::vector<char> encoded;
 			encoded.resize(len);
-			//fread(&(data[0]), 1, len, m_valFile);
 			int r = seekReadVal(&(encoded[0]), 1, len, offset + sizeof(int));
 			if (r <= 0) r = 0;
-			if (r) data.reserve(r * 2);
+			if (r) data.reserve(r * 5 + 1); // around 75% compress ratio
 			len = KeyValDB_decompress((unsigned char*)&(encoded[0]), 
 				                      r, &data);
 		} else {
 			data.resize(len);
-			//fread(&(data[0]), 1, len, m_valFile);
 			int r = seekReadVal(&(data[0]), 1, len, offset + sizeof(int));
 			if (r <= 0) r = 0;
 			if (r < len) { len = r; data.resize(r); }

@@ -27,6 +27,9 @@ bool downloadEx(const char *host, int port,
 			    size_t maxLen)
 {
   try {
+	  unsigned int t0 = ::timeGetTime();
+	  unsigned int t_max = t0 + 15 * 1000; // <--- max 15 sec
+
 	  int navail = 0;
 	  int nread = 0;
 	  LPSTR pszOutBuffer;
@@ -83,8 +86,6 @@ bool downloadEx(const char *host, int port,
 
 	  if( bResults )
 	  {
-		size_t res_size = 16384;
-		outData.reserve(res_size);
 		do
 		{
 		  // Check for available data.
@@ -100,11 +101,12 @@ bool downloadEx(const char *host, int port,
 		  navail += 4096;
 		  outData.resize(osize + navail);
 		  nread = 0;
+		  // WinHttp bug?? need larger buffer than NumOfBytesToRead
 		  if( !WinHttpReadData(hRequest, (LPVOID)&(outData[osize]), 
 							   navail - 32, (LPDWORD)&nread) ) break;
 		  if (nread < 0) nread = 0;
 		  outData.resize(osize + nread);
-		} while( navail > 0 );
+		} while( navail > 0 && (int)(::timeGetTime() - t_max) < 0);
 		check = 8;
 	  }
 

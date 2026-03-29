@@ -61,11 +61,13 @@ public:
 		BOOL b = v; 
 		::setsockopt(m_sock, IPPROTO_TCP, TCP_NODELAY, (char*)(&b), sizeof(BOOL));
 	}
-	inline size_t nAvailRead() {
+	inline long long nAvailRead() {
 		if (!m_sock) return 0;
 		u_long bufferLen = 0;
-        ::ioctlsocket(m_sock, FIONREAD, &bufferLen); 
-		return bufferLen;
+		if (::ioctlsocket(m_sock, FIONREAD, &bufferLen) == NO_ERROR)
+			return bufferLen;
+		else
+			return -1;
 	}
 	inline int recv(char *data, int len) { // return 0: socket closed, negative: error
 		if (!m_sock) return -1;

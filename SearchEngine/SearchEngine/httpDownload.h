@@ -19,17 +19,16 @@ bool recvContent(KKSocket *client, std::vector<char> &data) {
 	int parsed = 0;
 	int step = 0;
 	data.clear();
-	data.reserve(65536);
-	const int maxLength = 400 * 1024;
+	const size_t maxLength = MAXPAGELEN;
 	const int maxHdrLen = 1500;
 	int delayMult = 1;
 	do {
 		int tremain = expire - ::timeGetTime();
 		if (tremain <= 0 || data.size() >= maxLength) break;
 		int flag = client->wait(true, false, true, tremain / 1000, tremain % 1000 * 1000);
-		int navail = client->nAvailRead();
+		long long navail = client->nAvailRead();
 		if (navail == 0) break; // closed
-		if (navail <= 0) {
+		if (navail < 0) {
 			if (flag & 4) break;
 			if (::timeGetTime() < expire) {
 				//::Sleep(100 + (rand() & 127)); 
@@ -39,6 +38,9 @@ bool recvContent(KKSocket *client, std::vector<char> &data) {
 			//if (delayMult < 8) delayMult++;
 			//continue;
 			break;
+		}
+		if (data.size() + navail > maxLength) {
+			navail = maxLength - data.size();
 		}
 		int osize = data.size();
 		data.resize(data.size() + navail);
@@ -118,7 +120,11 @@ again:
 					}
 					if (url2Len) {
 						url2[url2Len] = 0;
-						url = split(url2, host, port);
+
+						const char* host_str;
+						int host_len;
+						url = split(url2, &host_str, &host_len, &port);
+						host = std::string(host_str, (size_t)host_len);
 						data.clear();
 						client.close();
 						if (!client.connect(host.c_str(), port, &ipv4)) return false;

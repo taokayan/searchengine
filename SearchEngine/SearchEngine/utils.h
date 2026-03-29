@@ -5,16 +5,19 @@
 #include <Windows.h>
 #include <emmintrin.h>
 
-//#define USE_AVX
+#define USE_AVX
 
 namespace Utils {
 
 inline int nCPUs() {
+	static int ncpu = -1;
+	if (ncpu > 0) return ncpu;
 	SYSTEM_INFO sysinfo;
 	::GetSystemInfo( &sysinfo );
 	int r = sysinfo.dwNumberOfProcessors;
 	if (r < 1) r = 1;
-	return r;
+	ncpu = r;
+	return ncpu;
 }
 
 inline size_t nFreeRAM() {

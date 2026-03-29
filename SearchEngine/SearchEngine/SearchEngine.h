@@ -10,26 +10,29 @@
 #include "..\..\Multiplexer\KKAVLTree.hpp"
 
 // crawling parameters
-#define DOWNLOADTIMEOUT  12000
-#define PENDINGBULK      50         // push n pending urls into pending DB each time
-#define MAXCRAWINGURL    100000000
+#define DOWNLOADTIMEOUT  12000      // max download time allowed in ms
+#define PENDINGBULK      20         // batch n pending urls into pending DB as a single record
+#define PENDING_READ_N   8          // read N random records from pending DB each time to shuffle hosts
+#define MAXCRAWINGURL    500000000  // default number, can be override
 #define MAXURLLEN        2048
 #define MAXURLPERHOST    1000000
-#define MAXHOSTTRY       10
+#define MAXPAGELEN       (768 * 1024) // avg 600kb for script
+#define MAXURLSPERPAGE   100          // max links extracted per page for crawling
+#define MAXHOSTTRY       10           // max num of retries per bad host
 #define THREADSTACKSIZE  (1048576/2)     // stack size of crawling thread
-#define SHORTENATDOWNLOAD (true)    // shorten data on downloading
+#define SHORTENATDOWNLOAD (false)    // shorten data on downloading
 #define DDOSDELAY        15000      // same host delay(ms)
 
 // ranking parameters
 #define MINWORDPERPAGE   64
-#define MAXWORDPERPAGE   2000
+#define MAXWORDPERPAGE   2000   // default number
 
 // indexing parameters
 #define SMALLWORDSIZE    8
 #define MAINWORDSIZE     24
 
 // temp data base for pending
-#define PENDINGDBMAX     2000               // hash(host)->pendingDB index
+#define PENDINGDBMAX     4000               // hash(host)->pendingDB index
 #define PENDINGDBFILE    "dbs\\pending"
 #define PENDINGRANKFILE  "pendingRank"
 
@@ -75,7 +78,7 @@ public:
 	size_t count() const { return m_count; }
 };
 
-struct MicroFloat {
+struct MicroFloat { // equivalent to BFloat16
 	uint16_t m_val;
 	MicroFloat() : m_val(0) {} 
 	MicroFloat(float fv) {
@@ -89,6 +92,36 @@ struct MicroFloat {
 		uint32_t v32 = m_val;
 		v32 <<= 16;
 		return *(float *)&v32;
+	}
+	bool operator < (const MicroFloat o) {
+		if (((m_val | o.m_val) & 0x8000) == 0) {
+			return m_val < o.m_val;
+		}
+		return (float)*this < (float)o;
+	}
+	bool operator <= (const MicroFloat o) {
+		if (((m_val | o.m_val) & 0x8000) == 0) {
+			return m_val <= o.m_val;
+		}
+		return (float)*this <= (float)o;
+	}
+	bool operator > (const MicroFloat o) {
+		if (((m_val | o.m_val) & 0x8000) == 0) {
+			return m_val > o.m_val;
+		}
+		return (float)*this > (float)o;
+	}
+	bool operator >= (const MicroFloat o) {
+		if (((m_val | o.m_val) & 0x8000) == 0) {
+			return m_val >= o.m_val;
+		}
+		return (float)*this >= (float)o;
+	}
+	bool operator == (const MicroFloat o) {
+		return m_val == o.m_val;
+	}
+	bool operator != (const MicroFloat o) {
+		return m_val != o.m_val;
 	}
 	MicroFloat operator=(float fv) {
 		set(fv); 
@@ -149,11 +182,21 @@ inline bool isSpaceTabNewLine(char c) {
 	return m[(unsigned char)c];
 }
 
-inline bool isValidWordChar(char c)
+inline bool isValidBeginWordChar(char c)
 {
 #define IsValidWordChar_(c) \
 	((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || \
 	 (c >= '0' && c <= '9')) ? true : false
+	static const bool m[256] = { Table256(IsValidWordChar_) };
+	return m[(unsigned char)c];
+}
+
+inline bool isValidWordChar(char c)
+{
+#define IsValidWordChar_(c) \
+	((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || \
+	 (c >= '0' && c <= '9') || \
+    c == '-' || c == '+' || c == '&' || c == '%' || c == '@') ? true : false
 	static const bool m[256] = { Table256(IsValidWordChar_) };
 	return m[(unsigned char)c];
 }
@@ -222,22 +265,38 @@ inline KeyValDB_Key getMD5(const std::string &s) {
 	return raw;
 }
 
-inline const char *split(const char *url, std::string &host, int &port) {
+inline KeyValDB_Key getMD5(const char *s, int len) {
+	MD5 md5;
+	KeyValDB_Key raw;
+	int offset = 0;
+	if (len > 4 && memcmp("www.", &(s[0]), 4) == 0) offset += 4;
+	while (s[offset] == '/') offset++;
+	if (offset >= len) return raw;
+	md5.digestMemory((BYTE*)&(s[offset]), len - offset);
+	memcpy(&raw, md5.digestRaw, 16);
+	return raw;
+}
+
+inline const char *split(const char *url, const char **host_str_out, int *host_len_out, int *port_out) {
 	int len = strlen(url);
-	port = 80;
+	*port_out = 80;
 	const char *end = url + len;
-	if (memcmp(url, "http://", 7) == 0) url+= 7;
-	else if (memcmp(url, "https://", 8)==0) {
-		port = 443; url+= 8;
+	if (len >= 7 && memcmp(url, "http://", 7) == 0) url+= 7;
+	else if (len >= 8 && memcmp(url, "https://", 8)==0) {
+		*port_out = 443; url += 8;
 	}
 	int hostlen = 0;
 	while (url[hostlen] && url[hostlen] != '/') hostlen++;
-	host = std::string(url, hostlen);
+
+	*host_str_out = url;
+	*host_len_out = hostlen;
+	//host.clear();
+	//host.append(url, hostlen);
 	url += hostlen;
 	if (url[0] == ':') {
-		url++; port = 0;
+		url++; *port_out = 0;
 		while (url[0] >= '0' && url[0] <= '9') {
-			port = port * 10 + url[0]-'0';
+			*port_out = (*port_out) * 10 + url[0]-'0';
 			url++;
 		}
 	}
@@ -248,7 +307,7 @@ inline const char *split(const char *url, std::string &host, int &port) {
 //	return split(url_.c_str(), host, port);
 //}
 
-template <int N>
+template <short N>
 struct FixedStr {
 	short         m_length;
 	unsigned char m_data[N];
@@ -256,28 +315,32 @@ struct FixedStr {
 		memset(m_data, 0, N); 
 		m_length = 0; 
 	}
+	inline short _strlen(const char* s) {
+		short len = 0;
+		while (len < N && s[len] != 0) len++;
+		return len;
+	}
 	inline FixedStr(const char *s) {
-		int len = strlen(s);
+		m_length = _strlen(s);
 		memset(m_data, 0, N);
-		m_length = len;
-		if (m_length > N) m_length = N;
 		memcpy(m_data, s, m_length);
 	}
-	inline explicit FixedStr(const char *s, int len) {
+	inline explicit FixedStr(const char *s, size_t len) {
 		memset(m_data, 0, N);
-		m_length = len;
-		if (m_length > N) m_length = N;
+		if (len > N) len = N;
+		m_length = (short)len;
 		if (m_length) memcpy(m_data, s, m_length);
 	}
 	inline explicit FixedStr(const std::string &s) {
 		memset(m_data, 0, N);
-		int m_length = s.length();
-		if (m_length > N) m_length = N;
-		memcpy(m_data, s.c_str(), m_length);
+		size_t len = s.length();
+		if (len > N) len = N;
+		m_length = len;
+		if (m_length) memcpy(m_data, s.c_str(), m_length);
 	}
 	inline int length() const { return m_length; }
 	void calLength() {
-		for (int i = 0; i < N; i++) {
+		for (short i = 0; i < N; i++) {
 			if (m_data[i] == 0) { m_length = i; return; } 
 		}
 		m_length = N;
@@ -376,8 +439,20 @@ public:
 		else return strlen((const char *)m_word);
 	}
 	int cmp(const DictWord_ &w) const {
-		int r = memcmp(m_word, w.m_word, sizeof(m_word));
-		if (r) return r;
+		int i = 0;
+		for (; i < sizeof(m_word) / 8; i++) {
+			uint64_t a = *(uint64_t*)&(m_word[i*8]);
+			uint64_t b = *(uint64_t*)&(w.m_word[i*8]);
+			if (a != b) {
+				a = _byteswap_uint64(a);
+				b = _byteswap_uint64(b);
+				return a > b ? 1 : -1;
+			}
+		}
+		if constexpr (sizeof(m_word) % 8) {
+			int r = memcmp((char *)m_word + i*8 , (char *)w.m_word + i*8, sizeof(m_word) % 8);
+			if (r) return r;
+		}
 		if (m_rank > w.m_rank) return 1;
 		if (m_rank < w.m_rank) return -1;
 		//if (m_rank != w.m_rank) 
@@ -442,39 +517,105 @@ struct RankArray {
 	inline RankArray(float v = 0) { rank[0] = 0; rank[1] = v; }
 };
 
+struct KKStatNumber {
+	KKAtomic<uint64_t> m_accVal;
+	KKAtomic<uint64_t> m_count;
+	double             m_avgLastSec;
+	KKAtomic<uint64_t> m_curSecAccVal;
+	KKAtomic<uint64_t> m_curSecCount;
+	KKAtomic<uint64_t> m_lastTime;
+	KKStatNumber() : m_avgLastSec(0.0) {}
+	void sample(uint64_t currentTime, uint64_t delta) {
+		m_accVal += delta;
+		m_count++;
+		uint64_t secCount = m_curSecCount.cmpXch(0, 0);
+		uint64_t secAccVal = m_curSecAccVal.cmpXch(0, 0);
+		currentTime /= 1000;
+		if (m_lastTime.xch(currentTime) != currentTime) {
+			m_avgLastSec = secCount > 0 ? secAccVal / (double)secCount : 0;
+			m_curSecAccVal = delta;
+			m_curSecCount = 1;
+		} else {
+			m_curSecAccVal += delta;
+			m_curSecCount++;
+		}
+	}
+	double avg() {
+		uint64_t c = m_count.cmpXch(0, 0);
+		uint64_t val = m_accVal.cmpXch(0, 0);
+		return c > 0 ? val / (double)c : 0.0;
+	}
+	double lastSecAvg() const {
+		return m_avgLastSec;
+	}
+};
+
 struct Model
 {
 	typedef KeyValDB<KKLock, KKObject, RankArray> DB;
 
 	struct PendDB {
+		enum _ { MaxBufUrls = PENDINGBULK * 20 }; // allow more buffer urls for shuffling
 		KKRef<DB>					  m_db;
-		std::string                   m_urlBuf[PENDINGBULK];
-		KeyValDB_Key                  m_urlmd5[PENDINGBULK];
+		std::string                   m_urlBuf[MaxBufUrls];
+		KeyValDB_Key                  m_urlmd5[MaxBufUrls];
+		KeyValDB_Key                  m_urlhostmd5[MaxBufUrls];
 		KKAtomic<int>                 m_bufCount;
 		KKAtomic<int>                 m_insertCount;
 		KKLock                        m_lock;
 
-		inline size_t count() { return m_db ? m_db->count() : 0; }
-		bool insert(const std::string &u, const KeyValDB_Key &md5) {
-			KKLockGuard<KKLock> g(m_lock);
-			if (m_bufCount >= PENDINGBULK) {
-				std::vector<char> urls;
-				urls.resize((MAXURLLEN + 4 + sizeof(KeyValDB_Key)) * PENDINGBULK);
-				int len = 0;
-				for (int i = 0; i < m_bufCount; i++) {
-					memcpy(&(urls[len]), m_urlBuf[i].c_str(), 
-							m_urlBuf[i].length());
-					len += m_urlBuf[i].length();
-					urls[len++] = (char)0; // delimeter
-					memcpy(&(urls[len]), &(m_urlmd5[i]), sizeof(KeyValDB_Key));
-					len += sizeof(KeyValDB_Key);
-				}
-				KeyValDB_Key key(m_insertCount++);
-				m_db->add(key, &(urls[0]), len);
-				m_bufCount = 0;
+	private: 
+		std::vector<char> _urls; // temp buffer for writing
+
+	public:
+		PendDB() {
+			_urls.resize((MAXURLLEN + 4 + sizeof(KeyValDB_Key)) * PENDINGBULK + 8);
+			for (int i = 0; i < sizeof(m_urlBuf) / sizeof(m_urlBuf[0]); i++) {
+				m_urlBuf[i].reserve(MAXURLLEN + 16);
 			}
-			m_urlBuf[m_bufCount] = u;
-			m_urlmd5[m_bufCount] = md5;
+		}
+
+		inline size_t count() { return m_db ? m_db->count() : 0; }
+		bool insert(const std::string &u, const KeyValDB_Key md5, const KeyValDB_Key hostmd5)
+		{	
+			KKLockGuard<KKLock> g(m_lock);
+			if (m_bufCount >= MaxBufUrls) {
+				// double check with lock held
+				int len = 0;
+				KeyValDB_Key key_insert_to_db = m_urlhostmd5[0];
+				for (int i = 0; i < PENDINGBULK; i++) {
+					memcpy(&(_urls[len]), m_urlBuf[i].c_str(),
+						m_urlBuf[i].length());
+					len += m_urlBuf[i].length();
+					_urls[len++] = (char)0; // delimeter
+					memcpy(&(_urls[len]), &(m_urlmd5[i]), sizeof(KeyValDB_Key));
+					len += sizeof(KeyValDB_Key);
+
+					m_urlBuf[i] = m_urlBuf[m_bufCount - 1];
+					m_urlmd5[i] = m_urlmd5[m_bufCount - 1];
+					m_urlhostmd5[i] = m_urlhostmd5[m_bufCount - 1];
+					m_bufCount--;
+				}
+				key_insert_to_db.m_k[0] = (m_insertCount++);
+
+				// key = [m_insertCount, hostMd5 of first url]
+				m_db->add(key_insert_to_db, &(_urls[0]), len);
+			}
+
+			if (m_bufCount < PENDINGBULK) {
+				m_urlBuf[m_bufCount] = u;
+				m_urlmd5[m_bufCount] = md5;
+				m_urlhostmd5[m_bufCount] = hostmd5;
+			}
+			else { // shuffle pending urls
+				int i = rand() % m_bufCount;
+				m_urlBuf[m_bufCount] = m_urlBuf[i];
+				m_urlmd5[m_bufCount] = m_urlmd5[i];
+				m_urlhostmd5[m_bufCount] = m_urlhostmd5[i];
+				m_urlBuf[i] = u;
+				m_urlmd5[i] = md5;
+				m_urlhostmd5[i] = hostmd5;
+			}
 			m_bufCount++;
 			return true;
 		}
@@ -483,22 +624,34 @@ struct Model
 			        std::string &url, KeyValDB_Key &md5) {
 			urls_md5s.resize(0);
 			std::vector<char> data;
-			data.reserve(PENDINGBULK * 512);
-			for (int i = 0; i < 4; i++) {
+			data.reserve(PENDINGBULK * 256);
+			KeyValDB_Key randkeys[PENDING_READ_N];
+			for (int i = 0; i < PENDING_READ_N; i++) {
 				data.resize(0);
 				KKLockGuard<KKLock> g(m_lock);
 				KeyValDB_Key key;
-				if (!m_db || !m_db->randKey(&key)) {
-					if (urls_md5s.size()) return 2;
-					if (m_bufCount) {
-						// get from uncommited pending buffer
-						url = m_urlBuf[m_bufCount - 1];
-						md5 = m_urlmd5[m_bufCount - 1];
-						m_bufCount--;
-						return 1;
+
+				int ntrys = 0; // 
+				bool same_host = false; // try to get an key respresenting differnt host
+				do {
+					if (!m_db || !m_db->randKey(&key)) {
+						if (urls_md5s.size()) return 2;
+						if (m_bufCount) {
+							// get from uncommited pending buffer
+							url = m_urlBuf[m_bufCount - 1];
+							md5 = m_urlmd5[m_bufCount - 1];
+							m_bufCount--;
+							return 1;
+						}
+						else return 0;
 					}
-					else return 0;
-				}
+					same_host = false;
+					for (int j = 0; j < i; j++) {
+						if (key.m_k[1] == randkeys[j].m_k[1]) { same_host = true; break; }
+					}
+				} while (ntrys-- > 0 && same_host);
+
+				randkeys[i] = key;
 				m_db->get(key, data);
 				m_db->remove(key);
 				g.unlock();
@@ -514,14 +667,18 @@ struct Model
 
 	KKLock                        m_lock;
 
-	typedef KKHash<KeyValDB_Key>  URLSet_;
+	// use hash set
+	typedef KKHash<KeyValDB_Key, KKNul, KKNul, KKLock> URLSet_;
 	typedef KKHash<KeyValDB_Key, KKNul, KKNul, KKLock, 
-		           KKHeapBase<sizeof(URLSet_::Node)> > URLSet;
+				   KKHeapBase<sizeof(URLSet_::Node)> > URLSet;
+
+	// use tree set
+	//typedef KKAVLTree<KeyValDB_Key> URLSet;
 
 	URLSet                        m_pendingURLs;
 	URLSet                        m_processingUrls; // processing + bad
 
-	KKConcurrentHash<KeyValDB_Key, int>     m_hostsCount; // pending count
+	KKConcurrentHash<KeyValDB_Key, int>     m_hostsCount;
 	KKHash<KeyValDB_Key, int>     m_hostsDownloadCount;
 	KKHash<KeyValDB_Key, int>     m_badHosts;
 	KKHash<KeyValDB_Key, in_addr> m_okHosts;
@@ -533,13 +690,16 @@ struct Model
 
 	int                           m_nThreads;
 	size_t                        m_maxCrawlingURLs;
+	bool                          m_onlyStoreCryptoKeys;
 	int                           m_pendDBTotal;
 	PendDB                        m_pendDB[PENDINGDBMAX];
 
 	double                        m_connTime;
-	double                        m_recvTime;
-	double                        m_parseTime;
-	long long                     m_nSuccess;
+	KKStatNumber                  m_recvTime;
+	KKStatNumber                  m_parseTime;
+	//double                        m_parseTime;
+	double                        m_dbInsertTime;
+	KKAtomic<uint64_t>            m_nSuccess;
 
 	KKAtomic<uint64_t>            m_sentBytes;
 	KKAtomic<uint64_t>            m_rcvdBytes;
@@ -555,6 +715,7 @@ struct Model
 	char                          m_pendingURLLogBuf[1048576];
 	int                           m_pendingURLLogBufLen;
 
+	KKAtomic<int>                 m_targetIdleThreads;
 	KKAtomic<int>                 m_nIdleThreads;
 
 	typedef KKHash<FixedStr<8>, KKNul, KKNul, KKNoLock> FilterWordHash;
@@ -563,7 +724,7 @@ struct Model
 
 	int                           m_maxWordPerPage;
 	Model() {
-		m_connTime = m_recvTime = m_parseTime = 0;
+		m_connTime = m_dbInsertTime = 0;
 		m_nSuccess = 0;
 		m_lastPrintTime = 0;
 		m_pendingURLLogBufLen = 0;
@@ -574,6 +735,7 @@ struct Model
 
 		m_nThreads = 0;
 		m_maxCrawlingURLs = MAXCRAWINGURL;
+		m_onlyStoreCryptoKeys = false;
 		m_pendDBTotal = PENDINGDBMAX;
 		m_maxWordPerPage = MAXWORDPERPAGE;
 
@@ -615,13 +777,13 @@ struct Model
 		m_nThreads = nthreads;
 		if (m_nThreads < m_pendDBTotal) m_pendDBTotal = m_nThreads;
 		m_contentDB = new DB(CONTENTDBKEY, CONTENTDBVAL, 
-			                 false, false, true, 65536, 1048576 * 4);
+			                 false, true, 16 * 1024, 4 * 1024 * 1024);
 		for (int i = 0; i < m_pendDBTotal; i++) {
 			char keyPath[4096], valPath[4096];
 			sprintf(keyPath, "%s_%d.key", PENDINGDBFILE, i);
 			sprintf(valPath, "%s_%d.val", PENDINGDBFILE, i);
 			m_pendDB[i].m_db = new DB(keyPath, valPath, 
-				                      true, false, false, 65536, 1048576 / 2, true);
+				                      true, false, 16 * 1024, 512 * 1024, true);
 		}
 		return true;
 	}
@@ -630,16 +792,16 @@ struct Model
 		FILE *f1 = fopen(SHORTENDBKEY, "rb");
 		if (f1) { 
 			fclose(f1);
-			m_contentDB = new DB(SHORTENDBKEY, SHORTENDBVAL, false, false, true);
+			m_contentDB = new DB(SHORTENDBKEY, SHORTENDBVAL, false, true);
 		} else {
-			m_contentDB = new DB(CONTENTDBKEY, CONTENTDBVAL, false, false, true);
+			m_contentDB = new DB(CONTENTDBKEY, CONTENTDBVAL, false, true);
 		}
 		m_contentDB->createReadBuf(1048576 * 1, 1048576 * 16);
 		return true;
 	}
 	bool initDB4Searching() {
 		if (m_contentDB) return false;
-		m_contentDB = new DB(CONTENTDBKEY, CONTENTDBVAL, false, false, true, 1024, 1024, false, true);
+		m_contentDB = new DB(CONTENTDBKEY, CONTENTDBVAL, false, true, 0, 0, false, true);
 		m_contentDB->createReadBuf(1048576 * 1, 1048576 * 16);
 		return true;
 	}
@@ -652,54 +814,61 @@ struct Model
 		m_lastPrintTime = ::timeGetTime();
 		std::vector<char> text;
 		text.resize(8192 + m_pendDBTotal * 6);
-
-		KKLockGuard<KKLock> g(m_lock);
 		len += sprintf(&(text[0]),
-			   "\nhosts:%llu(bad:%llu ok:%llu) "
-			   "url:(contentDB:%llu processing+bad:%llu ok:%llu pend:%llu) "
-			   "conn:%.0lfms recv:%.0lfms parse:%.3lfms "
-			   "sentBytes:%lld rcvdBytes:(http %lld, https %lld) "
-			   "compressed:%lld idleThreads:%d freeRAM:%lldMB\n",
-			   m_hostsCount.count(),  m_badHosts.count(), m_okHosts.count(),
-			   m_contentDB ? m_contentDB->count() : 0, m_processingUrls.count(), m_nSuccess, m_pendingURLs.count(), 
-			   m_nSuccess ? m_connTime / (m_nSuccess) : 0,
-			   m_nSuccess ? m_recvTime / (m_nSuccess) : 0,
-			   m_nSuccess ? m_parseTime / (m_nSuccess) : 0,
-			   (long long)m_sentBytes, 
-			   (long long)m_rcvdBytes, (long long)m_rcvdHttpsBytes,
-			   (long long)m_compressedBytes, (int)m_nIdleThreads,
-			   (long long)m_freeSystemRAM / 1048576);
+			"\nhosts:%llu(bad:%llu ok:%llu) "
+			"url:(contentDB:%llu processing+bad:%llu ok:%llu pend:%llu) "
+			"conn:%.0lfms recv:(avg %.0lfms, lastSec %.0lfms) parse:(avg %.3lfms, lastSec %.3lfms) db_insert:%.3lfms "
+			"sentBytes:%lld rcvdBytes:(http %lld, https %lld) "
+			"compressed:%lld idleThreads:%d freeRAM:%lldMB\n",
+			m_hostsCount.count(), m_badHosts.count(), m_okHosts.count(),
+			m_contentDB ? m_contentDB->count() : 0, m_processingUrls.count(), m_nSuccess, m_pendingURLs.count(),
+			m_nSuccess ? m_connTime / (m_nSuccess) : 0,
+			m_recvTime.avg(), m_recvTime.lastSecAvg(),
+			m_parseTime.avg(), m_parseTime.lastSecAvg(),
+			m_nSuccess ? m_dbInsertTime / (m_nSuccess) : 0,
+			(long long)m_sentBytes,
+			(long long)m_rcvdBytes, (long long)m_rcvdHttpsBytes,
+			(long long)m_compressedBytes, (int)m_nIdleThreads.cmpXch(0, 0),
+			(long long)m_freeSystemRAM / 1048576);
 		len += sprintf(&(text[len]), "PendDBs:[");
 		for (int i = 0; i < m_pendDBTotal; i++) {
 			size_t c = m_pendDB[i].count();
-			if (c <= 9999) 
-				len += sprintf(&(text[len]), "%4llu ", c); 
-			else if (c < 1000000) 
+			if (c <= 9999)
+				len += sprintf(&(text[len]), "%4llu ", c);
+			else if (c < 1000000)
 				len += sprintf(&(text[len]), "%3lluK ", c / 1000);
 			else
 				len += sprintf(&(text[len]), "%3lluM ", c / 1000000);
 		}
 		len += sprintf(&(text[len]), "]\nTop hosts:");
+
+		std::string lastURL;
+		{
+			KKLockGuard<KKLock> g(m_lock);
+			lastURL = m_lastURL;
+		}
+
 		auto itr = m_topHosts.last();
 		int maxshow = 50;
 		while (itr && maxshow--) {
 			len += sprintf(&(text[len]), "%s %d, ", itr->val().c_str(), (int)itr->key().first);
 			itr = m_topHosts.prev(itr);
 		}
-		len += sprintf(&(text[len]), "\nlastURL:%.*s%s\n", 
-			           m_lastURL.length() > 140 ? 140 : m_lastURL.length(), m_lastURL.c_str(),
-					   m_lastURL.length() > 140 ? "..." : "");
+		len += sprintf(&(text[len]), "\nlastURL:%.*s%s\n",
+			lastURL.length() > 140 ? 140 : lastURL.length(), lastURL.c_str(),
+			lastURL.length() > 140 ? "..." : "");
+
 		::fwrite(&(text[0]), 1, len, stdout);
 	}
 
 	// hash for avoiding frequecy websit access
-	inline static uint64_t hostCollisionHash(const std::string &host) {
-		int i = host.length() - 1;
+	inline static uint64_t hostCollisionHash(const char *host, int host_len) {
+		int i = host_len - 1;
 		int remaindots = 1;
 		while (i >= 0) {
 			if (host[i] == '.') {
 				if (!remaindots) {
-					if (i + 4 <= host.length() && 
+					if (i + 4 <= host_len &&
 						(!memicmp(&(host[i]), ".com", 4)||
 						 !memicmp(&(host[i]), ".org", 4))) {
 						i--; continue;
@@ -712,19 +881,20 @@ struct Model
 			i--;
 		}
 		if (i < 0) i = 0;
-		std::string indexStr = (const char *)&(host[i]);
-		KeyValDB_Key md5 = getMD5(indexStr);
+		KeyValDB_Key md5 = getMD5(host + i, host_len - i);
 		return (md5.m_k[0] ^ md5.m_k[1]);
 	}
 private:
-	inline bool filterURL(const std::string &u, int *pendDBIndex) {
+	inline bool filterURL(const std::string &u, int *pendDBIndex /*out*/, KeyValDB_Key* hostmd5 /*out*/) {
 		int len = u.length();
 		if (len < 4 || len > MAXURLLEN) return false;
 
 		if (len > 4) {
-			if (memcmp(&(u.c_str()[len - 3]), ".js", 3) == 0) return false;
+			if (!m_onlyStoreCryptoKeys) {
+				if (memcmp(&(u.c_str()[len - 3]), ".js", 3) == 0) return false;
+				if (memcmp(&(u.c_str()[len - 4]), ".css", 4) == 0) return false;
+			}
 			if (memcmp(&(u.c_str()[len - 4]), ".ico", 4) == 0) return false;
-			if (memcmp(&(u.c_str()[len - 4]), ".css", 4) == 0) return false;
 			if (memcmp(&(u.c_str()[len - 4]), ".jpg", 4) == 0) return false;
 			if (memcmp(&(u.c_str()[len - 4]), ".png", 4) == 0) return false;
 			if (memcmp(&(u.c_str()[len - 4]), ".zip", 4) == 0) return false;
@@ -734,34 +904,38 @@ private:
 			if (memcmp(&(u.c_str()[len - 4]), ".rar", 4) == 0) return false;
 		}
 
-		std::string host;
+		//std::string host;
+		const char* host_str;
+		int host_len=0;
 		int port;
-		split(u.c_str(), host, port);
-		if (host.length() <= 2) return false;
-		if (host.length() > 3) {
-			if (memcmp(&(host.c_str()[host.length() - 3]), ".jp", 3) == 0) return false;
+		split(u.c_str(), &host_str, &host_len, &port);
+		if (host_len <= 2) return false;
+		if (host_len > 3) {
+			if (memcmp(&(host_str[host_len - 3]), ".jp", 3) == 0) return false;
 		}
-		KeyValDB_Key hostmd5 = getMD5(host);
+		*hostmd5 = getMD5(host_str, host_len);
 
 		{
-			KKLockGuard<KKLock> g(m_hostsCount.lock(hostmd5));
-			if (auto node = m_hostsCount.find(hostmd5)) {
+			KKLockGuard<KKLock> g(m_hostsCount.lock(*hostmd5));
+			if (auto node = m_hostsCount.find(*hostmd5)) {
 				if (node->m_val >= MAXURLPERHOST) return false;
 				node->m_val++;
 			}
 			else {
-				m_hostsCount.insert(hostmd5, 1);
+				m_hostsCount.insert(*hostmd5, 1);
 				//printf("+host %s\n", host.c_str());
 			}
 		}
 
 		// pendDB index
-		*pendDBIndex = hostCollisionHash(host) % m_pendDBTotal;
+		*pendDBIndex = hostCollisionHash(host_str, host_len) % m_pendDBTotal;
 		return true;
 	}
 public:
 	void onDownloaded(const std::string &host) {
 		KeyValDB_Key hostmd5 = getMD5(host);
+
+		KKLockGuard<KKLock> g(m_lock);
 		if (auto node = m_hostsDownloadCount.find(hostmd5)) {
 			if (node->m_val >= 20)
 				m_topHosts.remove(std::make_pair(node->m_val, hostmd5));
@@ -781,9 +955,9 @@ public:
 		if (len < 3) return false;
 		if (u.length() >= 7 && memcmp(u.c_str(), "https", 5) == 0) {
 			if (u[5] != ':') return false;
-			while (len > 0 && u[len-1] == '/') len--;
-			if (!len) u = "";
-			else u = u.substr(0, len);
+			while (len > 0 && u[len-1] == '/') len--; // remove '/' from the end
+			if (!len) u.clear();
+			else u.resize(len);
 			return true; // don't truncate https URLs
 		}
 		if (u.length() >= 7 && memcmp(u.c_str(), "http", 4) == 0) {
@@ -794,26 +968,21 @@ public:
 		while (u.length() > p + 1 && u[p] == '/') p++;
 		while (len > 0 && u[len-1] == '/') len--;
 		if (len - p < 3) return false; 
-		if (p || len != u.length()) u = u.substr(p, len - p);
+		if (p || len != u.length()) {
+			if (p == 0) u.resize(len);
+			else u = u.substr(p, len - p);
+		}
 		return true;
 	}
-	inline bool pushPending(std::string u, bool writeTextFile) 
+	inline bool pushPending(std::string &u, bool writeTextFile) 
 	{
 		int pendDBInd = 0;
 		if (m_pendingURLs.count() + m_processingUrls.count()
 			+ (m_contentDB ? m_contentDB->count() : 0) >= m_maxCrawlingURLs) return false;
 		if (!truncateURL(u)) return false;
-		if (!filterURL(u, &pendDBInd)) return false;
-
-		size_t maxPending = m_maxCrawlingURLs - m_contentDB->count() - m_processingUrls.count();
-		if (m_pendDB[pendDBInd].count() >= maxPending / m_pendDBTotal / PENDINGBULK)
-			return false;
-
+		KeyValDB_Key hostmd5;
+		if (!filterURL(u, &pendDBInd, &hostmd5)) return false;
 		KeyValDB_Key md5 = getMD5(u);
-
-		if (m_processingUrls.find(md5) || m_pendingURLs.find(md5) || m_contentDB->exist(md5))
-			return false;
-
 		KKLockGuard<KKLock> g(m_lock);
 		if (!m_processingUrls.find(md5) && !m_pendingURLs.find(md5) && !m_contentDB->exist(md5)) {
 			if (writeTextFile && m_urlFile) {
@@ -826,9 +995,9 @@ public:
 				m_pendingURLLogBuf[m_pendingURLLogBufLen++] = '\n';
 			}
 			if (m_pendDB[pendDBInd].m_db) {
-				m_pendingURLs.insert(md5);
+				m_pendingURLs.insert(md5, KKNul{});
 				g.unlock();
-				m_pendDB[pendDBInd].insert(u, md5);
+				m_pendDB[pendDBInd].insert(u, md5, hostmd5);
 			}
 			return true;
 		}
