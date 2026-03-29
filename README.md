@@ -2,7 +2,7 @@
 A light weight webpage crawler and search engine with the following advantages:
 
 - Written purely in C++, no boost required, no 3rd party database required, run natively on everybody's Windows 10/7 x64.
-- Lightning fast crawling speed (2000 pages/sec) with ordinary single i7 CPU, in a normal 7200rpm harddisk.
+- Lightning fast crawling speed (2000 pages/sec or more) with 12th gen i7/i9 cpu, more than 1Gbps network utility.
 - Support HTTP & HTTPS webpages.
 - Crawling with heuristic, avoid frequent http requests to the same host.
 - Support billions of pages, no theorectical limit.
@@ -11,6 +11,7 @@ A light weight webpage crawler and search engine with the following advantages:
 - Optimized for harddisk: less than 50 harddisk access per second, no SSD required
 - Optimized for reverse-indexing with in-place merge sort, O(log N) hard-disk access for each searching key word
 - Multi-language searching support: support all UTF-8 compatible searching characters, especially Chinese.
+- <b> (New) Support page search in web-server mode, allowing search requests from web browsers. </b>
 
 Version 1.1
 - Avoid DOS attack: limiting 1 request per 15 sec to the same domain
@@ -29,15 +30,16 @@ In SearchEngine\x64\Release, create a folder called ```dbs```, then create a fil
 
 Run ```SearchEngine.exe```, you'll see a small menu like follows:
 ```
-Last build time:Oct 21 2018 21:49:19
+Last build time:Feb 26 2026 12:32:50
+Max stdio count is 4010
 1. run URL crawling
-2. run content shortening
+2. run content shortening (deprecated)
 3. start ranking downloaded content
 4. search pages
-101. exteral sort test
-102. winHttp page download
+101. external sort test
+102. winHttp page download test
 103. database compress test
-Please select:
+104. get words from html file test
 ```
 Great! The program is started successfully. Type ```1``` then press enter to start crawling.
 
@@ -131,6 +133,10 @@ Reverse Indexing finished!!! time:29070ms
 
 # 5: Search pages by key word
 Congratulation, you can now use your search engine to search! Restart the process and select ```4. search pages``` to start searching. 
+
+The server port is optional:
+- 0: search requests come from command line console
+- Any port number > 0: start web server mode, use ```http://127.0.0.1:port/index.html``` to connect from web browser
 
 Note: Please type lower case letter only for English. Also you can use Chinese, Japanese or other languages. Use space to separate each keyword, and use ```"``` to quote the keyword that contain space. For example:
 
@@ -248,12 +254,11 @@ Final:77, read time:16ms, join/sort time:0ms, marshall time:15ms
 - ```Final:77```: there are 77 pages containing ```hong``` and ```kong``` and ```weather```.
 
 
+# 6 Start your search engine web server:
+<img width="1601" height="946" alt="image" src="https://github.com/user-attachments/assets/4f7371fb-791b-4d12-a432-68c32e02816b" />
+
+
 
 Enjoy your life with your own search engine!!! Please help to improve your own search engine.
 
-If you wish to donate, here is my addresses:
-
-BTC: 1NLhfXbjZX18r9vucVhSDCKVkeD1mPA2N2
-
-ETH: 0x5e994663a04261a98a477a620295f0e9934e5c34
 
